@@ -11,8 +11,11 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 ![Obsidian Desktop](https://img.shields.io/badge/Obsidian-desktop%20only-7c3aed)
 
-<!-- 演示视频：在 GitHub 网页编辑本文件，把 docs/demo-720p.mp4 拖到这一行，替换成生成的 https://github.com/user-attachments/assets/... 链接 -->
-DEMO_VIDEO_URL
+
+
+https://github.com/user-attachments/assets/5c824726-e207-4e2b-a884-dd4253660710
+
+
 
 [English](#english) · [安装](#安装) · [功能](#功能) · [开发](#开发) · [隐私](#隐私)
 
