@@ -31,7 +31,7 @@ https://github.com/user-attachments/assets/5c824726-e207-4e2b-a884-dd4253660710
 - ⌚ **Garmin 同步（实验性，默认关闭）**：同步睡眠、心率、HRV、压力、步数和运动记录。
 
 > [!NOTE]
-> 本项目只用于整理和回顾报告，不提供诊断或医疗建议。目前只支持桌面版 Obsidian，扫描件 PDF 需要先做文字识别（OCR）。
+> 本项目只用于整理和回顾报告，不提供诊断或医疗建议（见 [免责声明](#免责声明)）。目前只支持桌面版 Obsidian，扫描件 PDF 需要先做文字识别（OCR）。
 
 ## 安装
 
@@ -93,6 +93,13 @@ tests/      运行时回归测试
 ## English
 
 HealthPocket is a local-first, desktop-only Obsidian plugin for organizing health-checkup PDF reports. It parses text-based PDFs on your machine, tracks lab metrics across years, and highlights findings on a Chinese-labeled 3D anatomy model. The UI is in Simplified Chinese, and the parsers target common Chinese checkup report templates. AI insights and Garmin sync are optional and off by default. No ads, no telemetry, and no medical advice.
+
+## 免责声明
+
+- 健康口袋是个人健康资料的整理工具，不是医疗器械，不提供诊断、治疗或用药建议，也不能代替医生的专业判断。
+- PDF 解析和 AI 洞察都可能出错或遗漏，AI 生成的内容尤其可能不准确。请以原始报告和医生的意见为准，身体不适时请及时就医。
+- Garmin 同步使用非官方接口，由此导致的账号限制或服务条款问题由使用者自行承担。
+- 本软件按原样提供，不附带任何担保。作者不对使用本软件造成的任何直接或间接损失负责，详见 [MIT License](LICENSE)。
 
 ## 许可
 
