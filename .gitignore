@@ -1,0 +1,47 @@
+.DS_Store
+.env
+.env.local
+node_modules/
+.next/
+coverage/
+dist/
+__pycache__/
+.pytest_cache/
+.venv
+*.pyc
+*.tsbuildinfo
+data/
+tmp/
+output/
+api/healthpocket.db
+healthpocket.db
+healthpocket.db-*
+healthpocket.db.pre-*
+*.db.pre-*
+web/playwright-report/
+web/test-results/
+web/out/
+/lib/app/
+main.js
+main.js.map
+healthpocket-*.zip
+*.db
+*.db.lock
+*.db.tmp
+
+# 设计 QA 截图（可能含真实体检数据，默认不进公开仓库；确认无敏感信息后可放开）
+/anatomy-*.png
+/anatomy-*.jpg
+/comparison-*.png
+/implementation-*.png
+
+# 其他 AI 编码工具的本地缓存（可能含个人数据或脚本），不进公开仓库
+.opensquilla/
+.workbuddy/
+
+# 本机运行产生的文件
+data.json
+*.baiduyun.uploading.cfg
+
+# 使用指南截图含真实体检数据和个人水印，不进公开仓库
+docs/

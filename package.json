@@ -1,0 +1,53 @@
+{
+  "name": "healthpocket-obsidian",
+  "version": "0.4.5",
+  "description": "本地优先的 Obsidian 体检报告管理插件",
+  "private": true,
+  "type": "module",
+  "main": "main.js",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/superMangoGame/healthpocket.git"
+  },
+  "keywords": [
+    "obsidian",
+    "obsidian-plugin",
+    "health",
+    "medical-report",
+    "pdf"
+  ],
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.0",
+    "@types/sql.js": "^1.4.11",
+    "esbuild": "^0.25.0",
+    "obsidian": "^1.13.1",
+    "typescript": "^5.9.2"
+  },
+  "scripts": {
+    "build": "npm run build:app && npm run build:obsidian",
+    "build:obsidian": "node scripts/build-obsidian.mjs",
+    "build:app": "bash scripts/build-plugin-app.sh",
+    "build:all": "npm run build",
+    "typecheck": "tsc -p tsconfig.obsidian.json",
+    "test": "npm run typecheck && node --experimental-strip-types scripts/test-chat-history.mjs && node scripts/test-runtime.mjs && node scripts/test-renderer-transport.mjs",
+    "test:standalone": "node scripts/standalone-smoke.mjs",
+    "package": "npm run build && npm test && npm run test:standalone && node scripts/package-release.mjs",
+    "release": "node scripts/publish-release.mjs"
+  },
+  "dependencies": {
+    "@ai-sdk/deepseek": "^3.0.45",
+    "@ai-sdk/openai": "^4.0.67",
+    "@ai-sdk/openai-compatible": "^3.0.49",
+    "@dofek/garmin-connect": "0.1.42",
+    "ai": "^7.0.102",
+    "fflate": "^0.8.3",
+    "pdfjs-dist": "^4.8.69",
+    "sql.js": "^1.14.2",
+    "undici": "7.29.1",
+    "zod": "4.6.5"
+  }
+}

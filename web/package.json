@@ -1,0 +1,38 @@
+{
+  "name": "healthpocket-web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@ai-sdk/react": "^4.0.105",
+    "@assistant-ui/ai-sdk": "^0.0.6",
+    "@assistant-ui/react": "^0.15.20",
+    "@assistant-ui/react-markdown": "0.14.15",
+    "@phosphor-icons/react": "^2.1.10",
+    "@react-three/drei": "^10.7.6",
+    "@react-three/fiber": "^9.7.0",
+    "ai": "^7.0.102",
+    "next": "16.3.5",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "recharts": "^3.2.1",
+    "remark-gfm": "^4.0.1",
+    "three": "^0.185.0"
+  },
+  "devDependencies": {
+    "@gltf-transform/cli": "^4.4.2",
+    "@tailwindcss/postcss": "^4.1.14",
+    "@types/node": "^24.3.0",
+    "@types/react": "^19.1.12",
+    "@types/react-dom": "^19.1.9",
+    "@types/three": "^0.179.0",
+    "obj2gltf": "^3.2.0",
+    "tailwindcss": "^4.1.14",
+    "typescript": "^5.9.2"
+  }
+}

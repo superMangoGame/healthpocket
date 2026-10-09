@@ -1,0 +1,38 @@
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install plugin toolchain
+        run: npm ci --no-audit --no-fund
+
+      - name: Install web toolchain
+        run: npm ci --prefix web --no-audit --no-fund
+
+      - name: Typecheck plugin
+        run: npm run typecheck
+
+      - name: Build Obsidian plugin
+        run: npm run build
+
+      - name: Typecheck web app
+        run: npm run typecheck --prefix web
+
+      - name: Runtime regressions
+        run: npm test
+
+      - name: Three-file installation smoke
+        run: npm run test:standalone

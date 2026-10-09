@@ -1,0 +1,39 @@
+name: Marketplace release
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['[0-9]*.[0-9]*.[0-9]*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            web/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm ci --prefix web --no-audit --no-fund
+      - run: npm run package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: healthpocket-marketplace
+          path: |
+            dist/main.js
+            dist/manifest.json
+            dist/styles.css
+            dist/SHA256SUMS.txt
+            healthpocket-*.zip
+      - name: Create draft GitHub release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/main.js dist/manifest.json dist/styles.css --draft --verify-tag --generate-notes
