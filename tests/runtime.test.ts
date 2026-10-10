@@ -7,7 +7,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { gunzipSync } from 'node:zlib'
 import { unzipSync } from 'fflate'
-import { createUIMessageStream, type ToolSet } from 'ai'
+import { createUIMessageStream, tool, type ToolSet } from 'ai'
+import { z } from 'zod'
+import type { Model, Provider, ProviderMap } from '@opencode-ai/models'
 import { inspectPdf, parsePdf, extractMeasurements, extractFindings, metricStatus, detectTemplate, extractInstitution } from '../src/parser.ts'
 import { extractLayout } from '../src/report-layout.ts'
 import { classifyAnatomy, organOfAnatomy, organConceptIds } from '../web/lib/anatomy.ts'
@@ -16,7 +18,8 @@ import { LocalDatabase } from '../src/database.ts'
 import { Aggregation } from '../src/aggregation.ts'
 import { authorizedRequest } from '../src/local-security.ts'
 import { handleStatic, APP_PREFIX } from '../src/static.ts'
-import type { AiModelRunner, AiSettings, InsightOutput } from '../src/ai.ts'
+import { AiService, OpenSourceAiRunner, describeModelError, type AiModelRunner, type AiSettings, type InsightOutput } from '../src/ai.ts'
+import { AiCatalog } from '../src/ai-catalog.ts'
 import { garminFetch, macOsGarminProxy, GarminLoginError, type GarminClientFactory, type GarminClientLike } from '../src/garmin.ts'
 import { cachedGarminOAuthConsumer, createGarminAuthFlow, forgetGarminOAuthConsumer, OAUTH_CONSUMER_URL, obtainGarminOAuthConsumer, REQUEST_BUDGET, REQUEST_TIMEOUT, setGarminConsumerStore, type GarminAuthEndpoints, type GarminConsumerStore } from '../src/garmin-auth.ts'
 import { GarminAuthError } from '@dofek/garmin-connect'
@@ -329,6 +332,67 @@ test('AI settings keep secrets outside the database and insights retain verified
     server.closeAllConnections(); server.close(); backend.dispose(); await backend.database.close()
     if (previous === undefined) delete process.env.HEALTHPOCKET_DATA_DIR; else process.env.HEALTHPOCKET_DATA_DIR = previous
     await rm(folder, { recursive: true, force: true })
+  }
+})
+
+test('AI providers come from the Models.dev catalog, calls stream, and keys never cross providers', async () => {
+  const requests: Array<{ path: string; auth: string | undefined; body: Record<string, unknown> }> = []
+  const server = createServer(async (req, res) => {
+    const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(chunk as Buffer)
+    const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>
+    requests.push({ path: req.url ?? '', auth: req.headers.authorization, body })
+    if (body.model === 'broke') { res.writeHead(402, { 'content-type': 'application/json' }); res.end('{"error":{"message":"Insufficient Balance"}}'); return }
+    const chunk = (delta: Record<string, unknown>, finish: string | null = null) =>
+      `data: ${JSON.stringify({ id: 'c1', object: 'chat.completion.chunk', created: 1, model: body.model, choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`
+    res.writeHead(200, { 'content-type': 'text/event-stream' })
+    res.end(chunk({ role: 'assistant', reasoning_content: '思考' }) + chunk({ content: 'HEALTHPOCKET_OK' }, 'stop') + 'data: [DONE]\n\n')
+  })
+  server.listen(0, '127.0.0.1'); await once(server, 'listening')
+  const address = server.address(); assert.ok(address && typeof address !== 'string')
+  const model = (id: string, extra: Partial<Model> = {}): Model => ({ id, name: id, description: '', attachment: false, reasoning: true, tool_call: true,
+    release_date: '2026-01-01', last_updated: '2026-01-01', modalities: { input: ['text'], output: ['text'] }, open_weights: true, limit: { context: 128_000, output: 8_192 }, ...extra })
+  const provider = (id: string, npm: string, api: string | undefined, models: Model[]): Provider => ({ id, name: id, npm, api, env: [], doc: '', models: Object.fromEntries(models.map((item) => [item.id, item])) })
+  const fixture: ProviderMap = {
+    deepseek: provider('deepseek', '@ai-sdk/openai-compatible', 'https://api.deepseek.com', [model('deepseek-v4-flash')]),
+    'siliconflow-cn': provider('siliconflow-cn', '@ai-sdk/openai-compatible', `http://127.0.0.1:${address.port}/v1`, [
+      model('Qwen/Qwen3-32B', { release_date: '2026-05-01' }), model('no-tools', { tool_call: false }), model('broke'),
+      model('retired', { status: 'deprecated' }), model('painter', { modalities: { input: ['text'], output: ['image'] } }),
+    ]),
+    'workers-ai': provider('workers-ai', '@ai-sdk/openai-compatible', 'https://api.example.com/accounts/${ACCOUNT_ID}/v1', [model('m')]),
+    azure: provider('azure', '@ai-sdk/azure', undefined, [model('m')]),
+    'zz-extra': provider('zz-extra', '@ai-sdk/openai-compatible', 'https://api.example.com/v1', [model('m')]),
+  }
+  const catalog = new AiCatalog(async () => fixture)
+  const secrets = new Map<string, string>([['heathpocket-ai-api-key', 'sk-legacy'], ['healthpocket-ai-api-key-siliconflow', 'sk-silicon']])
+  // A row saved before the switch to Models.dev ids.
+  let row: Record<string, unknown> | null = { provider: 'siliconflow', name: '硅基流动', base_url: 'https://api.siliconflow.cn/v1', model: 'Qwen/Qwen3-32B', enabled: 1, updated_at: 'then' }
+  const db = { one: () => row, run: (_sql: string, params: Record<string, unknown>) => { row = { ...params, updated_at: params.now } }, persist: async () => {} } as unknown as LocalDatabase
+  const service = new AiService(db, { get: (id) => secrets.get(id) ?? null, set: (id, value) => { secrets.set(id, value) } }, undefined, catalog)
+  try {
+    assert.deepEqual((await service.providers()).map((item) => item.id), ['deepseek', 'siliconflow-cn', 'ollama', 'custom', 'zz-extra'])
+    assert.deepEqual((await service.models({ provider: 'siliconflow-cn' })).models, ['Qwen/Qwen3-32B', 'broke', 'no-tools'])
+
+    const settings = service.settings()
+    assert.equal(settings.provider, 'siliconflow-cn'); assert.equal(settings.has_api_key, true)
+    assert.equal(secrets.get('healthpocket-ai-api-key-siliconflow-cn'), 'sk-silicon'); assert.equal(secrets.get('healthpocket-ai-api-key-siliconflow'), '')
+    assert.equal(secrets.get('heathpocket-ai-api-key'), '', 'the pre-0.2.0 key is retired, not offered to other providers')
+    await assert.rejects(() => service.saveSettings({ provider: 'deepseek', model: 'deepseek-v4-flash' }), /需要 API Key/)
+    await assert.rejects(() => service.saveSettings({ provider: 'custom', model: 'm' }), /服务地址/)
+    await assert.rejects(() => service.saveSettings({ provider: 'workers-ai', model: 'm' }), /有效的模型供应商/)
+
+    await service.test()
+    assert.equal(requests.at(-1)?.path, '/v1/chat/completions'); assert.equal(requests.at(-1)?.auth, 'Bearer sk-silicon'); assert.equal(requests.at(-1)?.body.stream, true)
+
+    const runner = new OpenSourceAiRunner(catalog)
+    const tools: ToolSet = { lookup: tool({ description: 'lookup', inputSchema: z.object({}), execute: async () => ({}) }) }
+    const ask = async (name: string) => { for await (const _chunk of await runner.stream({ ...settings, model: name }, 'sk-silicon', [{ role: 'user', content: '你好' }], tools)) { /* drain */ } return requests.at(-1)!.body }
+    assert.ok((await ask('Qwen/Qwen3-32B')).tools, 'tools are offered to a model that can call them')
+    assert.equal((await ask('no-tools')).tools, undefined, 'a model without tool calling still answers')
+
+    const failure = await runner.test({ ...settings, model: 'broke' }, 'sk-silicon').then(() => null, (error: unknown) => error)
+    assert.equal(describeModelError(failure), '模型服务账户余额不足，请充值后重试')
+  } finally {
+    server.closeAllConnections(); server.close()
   }
 })
 

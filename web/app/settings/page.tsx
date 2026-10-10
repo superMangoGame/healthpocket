@@ -145,6 +145,8 @@ export default function SettingsPage() {
   const mfaDialog = useRef<HTMLDialogElement>(null);
   const mfaInlineInput = useRef<HTMLInputElement>(null);
   const provider = useMemo(() => providers.find((item) => item.id === ai.provider), [providers, ai.provider]);
+  /** The provider whose model list was asked for last; a slower earlier answer must not replace it. */
+  const modelsFor = useRef("");
 
   const showMfaDialog = () => {
     const dialog = mfaDialog.current;
@@ -187,7 +189,10 @@ export default function SettingsPage() {
 
   useEffect(() => {
     Promise.all([apiFetch<AiSettings>("/ai/settings"), apiFetch<AiProviderInfo[]>("/ai/providers")])
-      .then(([saved, list]) => { setAi(saved); setProviders(list); setModels(saved.model ? [saved.model] : []); })
+      .then(([saved, list]) => {
+        setAi(saved); setProviders(list); setModels(saved.model ? [saved.model] : []);
+        if (list.some((item) => item.id === saved.provider && !item.custom_base_url)) void loadModels(saved);
+      })
       .catch((reason) => setError(reason instanceof Error ? reason.message : "无法读取设置"));
     void refreshGarmin();
   }, []);
@@ -517,21 +522,24 @@ export default function SettingsPage() {
     } catch (reason) { setError(reason instanceof Error ? reason.message : '导出失败'); }
   };
 
-  const loadModels = async () => {
-    setLoadingModels(true); setMessage(""); setError(""); setModelWarning("");
+  const loadModels = async (target: AiSettings = ai) => {
+    modelsFor.current = target.provider;
+    setLoadingModels(true); setModelWarning("");
     try {
-      const result = await apiFetch<AiModelList>("/ai/models", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ provider: ai.provider, api_key: apiKey }) });
+      const result = await apiFetch<AiModelList>("/ai/models", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ provider: target.provider, base_url: target.base_url, api_key: apiKey }) });
+      if (modelsFor.current !== target.provider) return;
       setModels(result.models); setModelWarning(result.warning ?? "");
-      setAi((current) => ({ ...current, model: result.models.includes(current.model) ? current.model : result.models[0] ?? "" }));
-      setMessage(`已获取 ${result.models.length} 个可用模型`);
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "模型列表获取失败"); }
-    finally { setLoadingModels(false); }
+      setAi((current) => current.provider === target.provider && !current.model ? { ...current, model: result.models[0] ?? "" } : current);
+    } catch (reason) {
+      if (modelsFor.current === target.provider) setModelWarning(reason instanceof Error ? reason.message : "模型列表获取失败");
+    }
+    finally { if (modelsFor.current === target.provider) setLoadingModels(false); }
   };
 
   const saveAi = async () => {
     setSaving(true); setMessage(""); setError("");
     try {
-      const saved = await apiFetch<AiSettings>("/ai/settings", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ provider: ai.provider, model: ai.model, api_key: apiKey }) });
+      const saved = await apiFetch<AiSettings>("/ai/settings", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ provider: ai.provider, model: ai.model.trim(), api_key: apiKey, base_url: ai.base_url }) });
       setAi(saved); setApiKey(""); setMessage("AI 模型配置已保存"); return saved;
     } catch (reason) { setError(reason instanceof Error ? reason.message : "保存失败"); throw reason; }
     finally { setSaving(false); }
@@ -547,7 +555,7 @@ export default function SettingsPage() {
   const clearKey = async () => {
     setSaving(true); setError("");
     try {
-      const saved = await apiFetch<AiSettings>("/ai/settings", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ provider: ai.provider, model: ai.model, clear_api_key: true }) });
+      const saved = await apiFetch<AiSettings>("/ai/settings", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ provider: ai.provider, model: ai.model.trim(), base_url: ai.base_url, clear_api_key: true }) });
       setAi(saved); setApiKey(""); setMessage("API Key 已从 Obsidian 安全存储中移除");
     } catch (reason) { setError(reason instanceof Error ? reason.message : "移除失败"); }
     finally { setSaving(false); }
@@ -562,13 +570,18 @@ export default function SettingsPage() {
 
   const providerChanged = (id: AiProvider) => {
     const next = providers.find((item) => item.id === id);
-    setAi({ ...DEFAULT_SETTINGS, provider: id, name: next?.name ?? id, base_url: next?.base_url ?? "" });
-    setApiKey(""); setModels(next?.default_models ?? []); setModelWarning(""); setMessage(""); setError("");
+    const target = { ...DEFAULT_SETTINGS, provider: id, name: next?.name ?? id, base_url: next?.base_url ?? "" };
+    setAi(target); setApiKey(""); setModels([]); setModelWarning(""); setMessage(""); setError("");
+    // Catalog providers list their models without a key; custom endpoints wait for an address.
+    if (next && !next.custom_base_url) void loadModels(target);
   };
 
   const needsKey = provider?.requires_api_key ?? true;
-  const canFetch = !needsKey || Boolean(apiKey || ai.has_api_key);
-  const canSave = Boolean(ai.model && (!needsKey || apiKey || ai.has_api_key));
+  const needsAddress = ai.provider === "custom";
+  const canFetch = !needsAddress || Boolean(ai.base_url.trim());
+  const canSave = Boolean(ai.model.trim() && (!needsKey || apiKey || ai.has_api_key) && canFetch);
+  const featuredProviders = providers.filter((item) => item.featured);
+  const moreProviders = providers.filter((item) => !item.featured);
   const mfaOptions: Array<{ value: "email" | "sms"; label: string }> = [];
   if (mfa?.target) mfaOptions.push({ value: "email", label: `邮箱 ${mfa.target}` });
   if (mfa?.masked_phone) mfaOptions.push({ value: "sms", label: `短信 ${mfa.masked_phone}` });
@@ -749,12 +762,19 @@ export default function SettingsPage() {
       </section>
       )}
       <section className="ai-settings panel">
-        <div className="ai-settings-head"><div><span className="eyebrow">AI 模型</span><h2>三步完成连接</h2><p>选择供应商，填写密钥，再从供应商返回的模型列表中选择。连接由开源 Vercel AI SDK 和 Models.dev 目录适配。</p></div>{ai.enabled && <span className="status status-normal"><CheckCircle /> 已配置</span>}</div>
+        <div className="ai-settings-head"><div><span className="eyebrow">AI 模型</span><h2>三步完成连接</h2><p>供应商和模型列表来自开源的 Models.dev 目录，调用由开源的 Vercel AI SDK 完成。选择供应商，填写密钥，再选择或直接输入模型名称。</p></div>{ai.enabled && <span className="status status-normal"><CheckCircle /> 已配置</span>}</div>
         <div className="ai-setup-steps">
-          <label className="ai-setup-step"><span className="step-number">1</span><span className="step-label">选择供应商</span><select className="select" value={ai.provider} onChange={(event) => providerChanged(event.target.value as AiProvider)}>{providers.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>
-          <label className="ai-setup-step"><span className="step-number">2</span><span className="step-label">填写 API Key {ai.has_api_key && <small>已安全保存</small>}</span><div className="input-action"><input className="text-input mono" type="password" autoComplete="new-password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={needsKey ? (ai.has_api_key ? "留空使用已保存密钥" : `填写 ${provider?.name ?? "供应商"} Key`) : "本地 Ollama 无需密钥"} disabled={!needsKey} /><button className="button" onClick={() => void loadModels()} disabled={loadingModels || !canFetch}><ArrowClockwise /> {loadingModels ? "获取中" : "获取模型"}</button></div></label>
-          <label className="ai-setup-step"><span className="step-number">3</span><span className="step-label">选择模型</span><select className="select mono" value={ai.model} onChange={(event) => setAi({ ...ai, model: event.target.value })} disabled={!models.length}><option value="">{models.length ? "请选择模型" : "请先获取模型列表"}</option>{models.map((model) => <option value={model} key={model}>{model}</option>)}</select></label>
+          <div className="ai-setup-step"><span className="step-number">1</span><span className="step-label">选择供应商</span><div className="ai-step-fields">
+            <select className="select" aria-label="模型供应商" value={ai.provider} onChange={(event) => providerChanged(event.target.value)}>
+              <optgroup label="常用">{featuredProviders.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</optgroup>
+              {moreProviders.length > 0 && <optgroup label="更多（Models.dev 目录）">{moreProviders.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</optgroup>}
+            </select>
+            {provider?.custom_base_url && <input className="text-input mono" aria-label="模型服务地址" value={ai.base_url} onChange={(event) => setAi({ ...ai, base_url: event.target.value })} placeholder={needsAddress ? "服务地址，例如 https://example.com/v1" : "http://127.0.0.1:11434/v1"} />}
+          </div></div>
+          <label className="ai-setup-step"><span className="step-number">2</span><span className="step-label">填写 API Key {ai.has_api_key && <small>已安全保存</small>}</span><input className="text-input mono" type="password" autoComplete="new-password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={needsKey ? (ai.has_api_key ? "留空使用已保存密钥" : `填写 ${provider?.name ?? "供应商"} Key`) : (needsAddress ? "如服务需要密钥请填写，否则留空" : "无需密钥，可留空")} /></label>
+          <label className="ai-setup-step"><span className="step-number">3</span><span className="step-label">选择模型</span><div className="input-action"><input className="text-input mono" list="ai-model-options" value={ai.model} onChange={(event) => setAi({ ...ai, model: event.target.value })} placeholder={loadingModels ? "正在读取模型列表…" : "从列表选择，或直接输入模型名称"} /><datalist id="ai-model-options">{models.map((model) => <option value={model} key={model} />)}</datalist><button className="button" onClick={(event) => { event.preventDefault(); void loadModels(); }} disabled={loadingModels || !canFetch}><ArrowClockwise /> {loadingModels ? "读取中" : "刷新列表"}</button></div></label>
         </div>
+        {provider && !provider.featured && <div className="ai-form-note">该供应商来自 Models.dev 目录，尚未在 Obsidian 中实测。如果连接失败，可能是它不允许从 Obsidian 直接访问，可以改用常用列表里的供应商或 OpenRouter。</div>}
         {modelWarning && <div className="ai-form-note">{modelWarning}</div>}
         <div className="ai-form-note">获取列表和测试连接不会发送健康数据。开始对话后，才会发送当前档案的去身份化结构化数据和你主动附加的数据文件。</div>
         <div className="ai-form-actions">{ai.has_api_key && <button className="button button-danger" onClick={() => void clearKey()} disabled={saving}>移除密钥</button>}<button className="button" onClick={() => void testAi()} disabled={testing || saving || !canSave}><PlugsConnected /> {testing ? "正在测试…" : "保存并测试"}</button><button className="button button-primary" onClick={() => void saveAi()} disabled={saving || !canSave}><FloppyDisk /> {saving ? "保存中…" : "保存配置"}</button></div>

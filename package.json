@@ -1,6 +1,6 @@
 {
   "name": "healthpocket-obsidian",
-  "version": "0.4.6",
+  "version": "0.4.7",
   "description": "本地优先的 Obsidian 体检报告管理插件",
   "private": true,
   "type": "module",
@@ -39,11 +39,15 @@
     "release": "node scripts/publish-release.mjs"
   },
   "dependencies": {
-    "@ai-sdk/deepseek": "^3.0.45",
-    "@ai-sdk/openai": "^4.0.67",
-    "@ai-sdk/openai-compatible": "^3.0.49",
+    "@ai-sdk/anthropic": "^4.0.78",
+    "@ai-sdk/deepseek": "^3.0.63",
+    "@ai-sdk/google": "^4.0.93",
+    "@ai-sdk/openai": "^4.0.91",
+    "@ai-sdk/openai-compatible": "^3.0.67",
     "@dofek/garmin-connect": "0.1.42",
-    "ai": "^7.0.102",
+    "@opencode-ai/models": "^0.0.99",
+    "@openrouter/ai-sdk-provider": "^3.1.0",
+    "ai": "^7.0.137",
     "fflate": "^0.8.3",
     "pdfjs-dist": "^4.8.69",
     "sql.js": "^1.14.2",

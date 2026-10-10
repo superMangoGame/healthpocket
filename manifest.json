@@ -1,7 +1,7 @@
 {
   "id": "healthpocket",
   "name": "HealthPocket",
-  "version": "0.4.6",
+  "version": "0.4.7",
   "minAppVersion": "1.11.4",
   "description": "Organize health report PDFs locally with annual trends and a Chinese-labeled 3D anatomy map.",
   "author": "Derek",

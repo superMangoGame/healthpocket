@@ -203,14 +203,18 @@ export interface AiSettings {
   updated_at: string | null;
 }
 
-export type AiProvider = "deepseek" | "openai" | "siliconflow" | "openrouter" | "moonshot" | "dashscope" | "ollama";
+/** A Models.dev provider id, or "ollama" / "custom". */
+export type AiProvider = string;
 
 export interface AiProviderInfo {
   id: AiProvider;
   name: string;
   base_url: string;
   requires_api_key: boolean;
-  default_models: string[];
+  /** Listed first; checked to work from inside Obsidian. */
+  featured: boolean;
+  /** Ollama and custom endpoints take a user-supplied address. */
+  custom_base_url: boolean;
 }
 
 export interface AiModelList {

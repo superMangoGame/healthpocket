@@ -164,7 +164,7 @@
 .gd-kpi p { margin: 7px 0 0; color: var(--gd-muted); font-size: 11px; }
 .gd-comparison { position: absolute; right: 15px; bottom: 15px; color: var(--normal); font-size: 12px; white-space: nowrap; }
 .gd-comparison small { display: block; margin-top: 4px; color: var(--gd-muted); font-size: 10px; }
-.gd-layout { display: grid; grid-template-columns: minmax(0,2.05fr) minmax(265px,.95fr); align-items: start; gap: 13px; }
+.gd-layout { display: grid; grid-template-columns: minmax(0,2.05fr) minmax(265px,.95fr); align-items: start; gap: 13px; margin-bottom: 13px; }
 .gd-primary { display: grid; gap: 13px; min-width: 0; }
 .gd-top-grid { display: grid; grid-template-columns: minmax(0,.95fr) minmax(0,1.2fr); gap: 13px; }
 .gd-calendar, .gd-stats, .gd-trend, .gd-insights, .gd-chat-teaser { padding: 16px; }
@@ -227,15 +227,17 @@
 .gd-trend-value strong { color: var(--text); font-size: 25px; letter-spacing: -.04em; }
 .gd-trend-value small { margin-left: 8px; color: var(--gd-muted); font-size: 10px; }
 .gd-line { height: 145px; margin-top: 4px; }
-.gd-bottom { display: grid; grid-template-columns: minmax(0,1fr); gap: 13px; }
-.gd-chat-teaser { min-height: 153px; }
+.gd-chat-teaser { min-height: 153px; align-self: stretch; display: flex; flex-direction: column; }
 .gd-chat-teaser h2 svg { width: 21px; height: 21px; }
 .gd-chat-teaser > p { margin: 13px 0 0; color: var(--muted); font-size: 11px; }
-.gd-chat-teaser .gd-examples { margin-top: 4px; }
-.gd-chat-teaser > button { width: 100%; min-height: 37px; margin-top: 11px; padding: 0 11px; border: 1px solid var(--gd-line); border-radius: 10px; background: var(--surface-subtle); color: var(--muted); text-align: left; display: flex; justify-content: space-between; align-items: center; cursor: pointer; font-size: 11px; }
+.gd-chat-teaser .gd-examples { margin: 8px 0 0; padding: 0; list-style: none; display: grid; gap: 6px; }
+.gd-chat-teaser .gd-examples li { padding: 8px 10px; border-radius: 8px; background: var(--surface-subtle); color: var(--text-soft); font-size: 11px; line-height: 1.5; }
+/* Sits at the foot of the column like a chat composer. */
+.gd-chat-teaser > button { width: 100%; min-height: 37px; margin-top: auto; padding: 0 11px; border: 1px solid var(--gd-line); border-radius: 10px; background: var(--surface-subtle); color: var(--muted); text-align: left; display: flex; justify-content: space-between; align-items: center; cursor: pointer; font-size: 11px; }
 .gd-chat-teaser > button:hover { border-color: var(--line-strong); background: var(--surface-sunken); }
-.gd-chat-teaser > small { display: none; }
-.gd-insights { display: grid; gap: 11px; }
+.gd-chat-teaser > small { margin-top: 7px; color: var(--faint); font-size: 10px; }
+.gd-insights { display: grid; grid-template-columns: repeat(auto-fit,minmax(240px,1fr)); align-items: start; gap: 11px; }
+.gd-insights > h2, .gd-insights > p, .gd-insights > .error, .gd-insights > .skeleton, .gd-insights > .gd-advice, .gd-insights-link { grid-column: 1/-1; }
 .gd-insights > h2 { font-size: 16px; }
 .gd-insights > h2 svg { width: 20px; height: 20px; }
 .gd-insights > h2 span { margin-left: auto; padding: 5px 8px; border: 1px solid var(--line); border-radius: 8px; color: var(--muted); font-size: 10px; font-weight: 500; }
@@ -266,8 +268,6 @@
   .gd-header { align-items: flex-start; }
   .gd-header-actions { flex-wrap: wrap; justify-content: flex-end; }
   .gd-layout { grid-template-columns: 1fr; }
-  .gd-insights { grid-template-columns: repeat(2,minmax(0,1fr)); }
-  .gd-insights > h2, .gd-insights > p, .gd-insights-link { grid-column: 1/-1; }
 }
 @media (max-width: 680px) {
   .app-shell:has(.garmin-dashboard) { display: flex; flex-direction: column-reverse; }
@@ -296,11 +296,9 @@
   .gd-kpi strong small { font-size: 10px; }
   .gd-kpi p { font-size: 9px; line-height: 1.4; }
   .gd-comparison { display: none; }
-  .gd-top-grid, .gd-trends, .gd-bottom { grid-template-columns: 1fr; }
+  .gd-top-grid, .gd-trends { grid-template-columns: 1fr; }
   .gd-calendar, .gd-stats, .gd-trend, .gd-insights, .gd-chat-teaser { padding: 13px; }
   .gd-stat-charts { height: 205px; grid-template-columns: minmax(0,1.2fr) minmax(105px,.8fr); }
-  .gd-insights { grid-template-columns: 1fr; }
-  .gd-insights > h2, .gd-insights > p, .gd-insights-link { grid-column: auto; }
     .gd-line { height: 160px; }
 }
 
@@ -2479,6 +2477,16 @@ button.risk-cell.selected strong {
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
 }
+.ai-step-fields {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+/* The catalog has long provider names; the select must not size itself to the longest one. */
+.ai-step-fields > .select {
+  width: 100%;
+  min-width: 0;
+}
 .text-input,
 .text-area {
   width: 100%;
@@ -3994,6 +4002,8 @@ dialog.dialog-floating {
     grid-template-columns: 28px minmax(0, 1fr);
   }
   .ai-setup-step > .select,
+  .ai-setup-step > .text-input,
+  .ai-setup-step > .ai-step-fields,
   .ai-setup-step > .input-action {
     grid-column: 1 / -1;
   }
@@ -4105,7 +4115,7 @@ dialog.dialog-floating {
 .gd-advice-hint, .gd-advice-error, .gd-advice-summary { margin: 0; font-size: 10.5px; line-height: 1.65; color: var(--muted); }
 .gd-advice-error { color: var(--abnormal); }
 .gd-advice-summary { color: var(--text-soft); }
-.gd-advice-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 8px; }
+.gd-advice-list { margin: 0; padding: 0; list-style: none; display: grid; grid-template-columns: repeat(auto-fill,minmax(280px,1fr)); gap: 8px 18px; }
 .gd-advice-list > li { padding-top: 8px; border-top: 1px solid var(--line); }
 .gd-advice-list h4 { margin: 0 0 4px; display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--text); }
 .gd-advice-list h4 .gd-icon { width: 22px; height: 22px; flex-basis: 22px; border-radius: 6px; }

@@ -1,48 +1,28 @@
 import {
+  APICallError,
   convertToModelMessages,
-  generateText,
   safeValidateUIMessages,
   isStepCount,
   streamText,
   tool,
   toUIMessageStream,
   type ToolSet,
-  Output,
   type ModelMessage,
   type UIMessage,
   type UIMessageChunk,
 } from 'ai'
-import { createOpenAI } from '@ai-sdk/openai'
-import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
-import { createDeepSeek } from '@ai-sdk/deepseek'
 import { z } from 'zod'
 import { createHash, randomUUID } from 'node:crypto'
 import type { LocalDatabase } from './database.ts'
 import { METRIC_BY_ID } from './metrics.ts'
 import { GARMIN_METRICS, GarminQuery, type GarminMetric } from './garmin-query.ts'
+import { AiCatalog, CUSTOM, OLLAMA, OLLAMA_BASE_URL, RENAMED_PROVIDERS, isLocal, type AiAdapter, type AiProviderInfo } from './ai-catalog.ts'
 
-export type AiProvider = 'deepseek' | 'openai' | 'siliconflow' | 'openrouter' | 'moonshot' | 'dashscope' | 'ollama'
-
-export interface AiProviderInfo {
-  id: AiProvider
-  name: string
-  base_url: string
-  requires_api_key: boolean
-  default_models: string[]
-}
-
-export const AI_PROVIDERS: AiProviderInfo[] = [
-  { id: 'deepseek', name: 'DeepSeek', base_url: 'https://api.deepseek.com', requires_api_key: true, default_models: ['deepseek-flash', 'deepseek-v4-pro'] },
-  { id: 'openai', name: 'OpenAI', base_url: 'https://api.openai.com/v1', requires_api_key: true, default_models: [] },
-  { id: 'siliconflow', name: '硅基流动', base_url: 'https://api.siliconflow.cn/v1', requires_api_key: true, default_models: ['deepseek-ai/DeepSeek-V4-Flash', 'Qwen/Qwen3-32B'] },
-  { id: 'openrouter', name: 'OpenRouter', base_url: 'https://openrouter.ai/api/v1', requires_api_key: true, default_models: [] },
-  { id: 'moonshot', name: 'Moonshot AI', base_url: 'https://api.moonshot.cn/v1', requires_api_key: true, default_models: ['kimi-k2.5'] },
-  { id: 'dashscope', name: '阿里云百炼', base_url: 'https://dashscope.aliyuncs.com/compatible-mode/v1', requires_api_key: true, default_models: ['qwen-max', 'qwen-plus'] },
-  { id: 'ollama', name: 'Ollama（本机）', base_url: 'http://127.0.0.1:11434/v1', requires_api_key: false, default_models: ['qwen3:8b', 'deepseek-r1:8b'] },
-]
+export type { AiProviderInfo }
 
 export interface AiSettings {
-  provider: AiProvider
+  /** A Models.dev provider id, or `ollama` / `custom`. */
+  provider: string
   name: string
   base_url: string
   model: string
@@ -112,12 +92,12 @@ export type AdviceOutput = z.infer<typeof adviceSchema>
 export interface AiModelRunner {
   test(settings: AiSettings, apiKey: string): Promise<void>
   generate(settings: AiSettings, apiKey: string, prompt: string): Promise<InsightOutput>
-  stream?(settings: AiSettings, apiKey: string, messages: ModelMessage[], tools?: ToolSet): ReadableStream<UIMessageChunk>
+  stream?(settings: AiSettings, apiKey: string, messages: ModelMessage[], tools?: ToolSet): ReadableStream<UIMessageChunk> | Promise<ReadableStream<UIMessageChunk>>
   advise?(settings: AiSettings, apiKey: string, prompt: string): Promise<AdviceOutput>
 }
 
 const LEGACY_API_KEY_SECRET = 'heathpocket-ai-api-key'
-const apiKeySecret = (provider: AiProvider) => `healthpocket-ai-api-key-${provider}`
+const apiKeySecret = (provider: string) => `healthpocket-ai-api-key-${provider}`
 const DEFAULTS: AiSettings = {
   provider: 'deepseek',
   name: 'DeepSeek',
@@ -128,31 +108,11 @@ const DEFAULTS: AiSettings = {
   updated_at: null,
 }
 
-function providerInfo(provider: AiProvider): AiProviderInfo {
-  const found = AI_PROVIDERS.find((item) => item.id === provider)
-  if (!found) throw new Error('请选择有效的模型供应商')
-  return found
-}
-
-function normalizeBaseUrl(value: string, provider: AiProvider): string {
-  const candidate = value.trim() || providerInfo(provider).base_url
+function normalizeBaseUrl(value: string): string {
   let url: URL
-  try { url = new URL(candidate) } catch { throw new Error('模型服务地址无效') }
+  try { url = new URL(value.trim()) } catch { throw new Error('模型服务地址无效') }
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('模型服务地址必须是 HTTP(S) 地址，且不能包含账号密码')
   return url.toString().replace(/\/$/, '')
-}
-
-function modelFor(settings: AiSettings, apiKey: string) {
-  if (settings.provider === 'deepseek') return createDeepSeek({ apiKey, baseURL: settings.base_url })(settings.model)
-  if (settings.provider === 'openai') {
-    return createOpenAI({ apiKey, baseURL: settings.base_url }).responses(settings.model)
-  }
-  return createOpenAICompatible({
-    name: 'healthpocket-compatible',
-    baseURL: settings.base_url,
-    apiKey: apiKey || undefined,
-    supportsStructuredOutputs: false,
-  })(settings.model)
 }
 
 /** Reasoning models (DeepSeek, o-series) spend part of the output budget thinking before the JSON answer. */
@@ -164,73 +124,101 @@ function parseJsonObject(text: string): unknown {
   try { return JSON.parse(text.slice(start, end + 1)) } catch { throw new Error('模型返回的 JSON 无法解析') }
 }
 
+/** Turns a provider failure into a sentence that says what to fix. */
+export function describeModelError(error: unknown): string {
+  const status = APICallError.isInstance(error) ? error.statusCode : undefined
+  const message = error instanceof Error ? error.message : '模型调用失败'
+  if (status === 401 || status === 403 || /\b(401|403)\b|api.?key|unauthorized|forbidden/i.test(message)) return '模型服务拒绝访问，请检查 API Key 和账号权限'
+  if (status === 402) return '模型服务账户余额不足，请充值后重试'
+  if (status === 429) return '请求过于频繁或额度已用完，请稍后重试'
+  if (status === 404) return `模型不存在或当前账号无权使用：${message}`.slice(0, 500)
+  if (/timeout|timed out|abort/i.test(message)) return '模型响应超时，请检查服务状态或稍后重试'
+  if (/fetch|network|connect|ECONN|ENOTFOUND/i.test(message)) return '无法连接模型服务，请检查地址和网络；部分供应商不允许从 Obsidian 直接访问'
+  return message.slice(0, 500)
+}
+
+// OpenAI keeps responses for 30 days unless told not to.
+const privacy = (adapter: AiAdapter) => adapter === 'openai' ? { providerOptions: { openai: { store: false } } } : {}
+
+/**
+ * Every call streams, even when only the finished text is needed: some
+ * providers (DashScope's Qwen3 and QwQ thinking models) refuse non-streaming
+ * requests outright.
+ */
+async function complete(options: Parameters<typeof streamText>[0]): Promise<{ text: string; finishReason: string }> {
+  // Failures surface as `error` parts and are rethrown; the default handler would also log them.
+  const result = streamText({ ...options, onError: () => {} })
+  let text = ''
+  for await (const part of result.fullStream) {
+    if (part.type === 'error') throw part.error
+    if (part.type === 'text-delta') text += part.text
+  }
+  return { text, finishReason: await result.finishReason }
+}
+
 export class OpenSourceAiRunner implements AiModelRunner {
+  constructor(private readonly catalog: AiCatalog) {}
+
+  /** Any generated token proves the key, the endpoint and the model; reasoning models may think for a while before writing. */
   async test(settings: AiSettings, apiKey: string): Promise<void> {
-    const result = await generateText({
-      model: modelFor(settings, apiKey),
-      prompt: 'Reply with exactly HEALTHPOCKET_OK.',
-      // Reasoning models may spend part of the output budget before emitting text.
-      maxOutputTokens: 256,
-      maxRetries: 0,
-      timeout: 20_000,
+    const { model, adapter } = await this.catalog.resolve(settings, apiKey)
+    const stop = new AbortController()
+    const result = streamText({
+      model, prompt: 'Reply with exactly HEALTHPOCKET_OK.',
+      maxOutputTokens: 1_024, maxRetries: 0, timeout: 60_000, abortSignal: stop.signal, onError: () => {}, ...privacy(adapter),
     })
-    if (!result.text.includes('HEALTHPOCKET_OK')) throw new Error('模型已响应，但未通过格式检查')
+    for await (const part of result.fullStream) {
+      if (part.type === 'error') throw part.error
+      if (part.type === 'text-delta' || part.type === 'reasoning-delta') { stop.abort(); return }
+    }
+    throw new Error('模型已响应，但没有返回任何内容')
   }
 
   async generate(settings: AiSettings, apiKey: string, prompt: string): Promise<InsightOutput> {
-    if (settings.provider === 'openai') {
-      const result = await generateText({
-        model: modelFor(settings, apiKey),
-        system: SYSTEM_PROMPT,
-        prompt,
-        output: Output.object({ schema: insightSchema, name: 'health_insight' }),
-        maxOutputTokens: REASONING_OUTPUT_TOKENS,
-        maxRetries: 1,
-        timeout: 120_000,
-        providerOptions: { openai: { store: false } },
-      })
-      return result.output
-    }
-    const result = await generateText({
-      model: modelFor(settings, apiKey),
+    const { model, adapter } = await this.catalog.resolve(settings, apiKey)
+    const result = await complete({
+      model,
       system: SYSTEM_PROMPT,
       prompt: `${prompt}\n\n仅输出一个 JSON 对象，字段必须为 summary、highlights、limitations、doctor_questions。highlights 每项包含 title、explanation、level（observation/attention/important）和 evidence_ids。不要使用 Markdown 代码块。`,
       maxOutputTokens: REASONING_OUTPUT_TOKENS,
       maxRetries: 1,
       timeout: 120_000,
+      ...privacy(adapter),
     })
     return insightSchema.parse(parseJsonObject(result.text))
   }
 
   async advise(settings: AiSettings, apiKey: string, prompt: string): Promise<AdviceOutput> {
-    const result = await generateText({
-      model: modelFor(settings, apiKey), system: ADVICE_SYSTEM_PROMPT,
+    const { model, adapter } = await this.catalog.resolve(settings, apiKey)
+    const result = await complete({
+      model, system: ADVICE_SYSTEM_PROMPT,
       prompt: `${prompt}\n\n仅输出一个 JSON 对象，字段为 summary、recommendations、cautions。recommendations 每项包含 title、category（sleep/activity/recovery/nutrition/body_age/checkup）、priority（high/medium/low）、why、actions（1–5 条具体可执行的动作）；recommendations 最多 6 条，cautions 最多 4 条。不要使用 Markdown 代码块。`,
-      maxOutputTokens: REASONING_OUTPUT_TOKENS, maxRetries: 1, timeout: 120_000,
-      ...(settings.provider === 'openai' ? { providerOptions: { openai: { store: false } } } : {}),
+      maxOutputTokens: REASONING_OUTPUT_TOKENS, maxRetries: 1, timeout: 120_000, ...privacy(adapter),
     })
     if (!result.text.trim() && result.finishReason === 'length') throw new Error('模型思考过程耗尽了输出长度，未给出结果，请重试或换用非推理模型')
     return adviceSchema.parse(parseJsonObject(result.text))
   }
 
-  stream(settings: AiSettings, apiKey: string, messages: ModelMessage[], tools?: ToolSet): ReadableStream<UIMessageChunk> {
+  async stream(settings: AiSettings, apiKey: string, messages: ModelMessage[], tools?: ToolSet): Promise<ReadableStream<UIMessageChunk>> {
+    const { model, adapter, supportsTools } = await this.catalog.resolve(settings, apiKey)
     const result = streamText({
-      model: modelFor(settings, apiKey),
+      model,
       system: CHAT_SYSTEM_PROMPT,
       messages,
       // Each Garmin lookup is one step; a few let the model compare ranges
       // before it answers, without letting a confused model loop forever.
-      ...(tools ? { tools, stopWhen: isStepCount(MAX_TOOL_STEPS) } : {}),
+      // Models that cannot call tools still get the overview in the prompt.
+      ...(tools && supportsTools ? { tools, stopWhen: isStepCount(MAX_TOOL_STEPS) } : {}),
       maxOutputTokens: 12_000,
       maxRetries: 1,
       timeout: 90_000,
-      ...(settings.provider === 'openai' ? { providerOptions: { openai: { store: false } } } : {}),
+      ...privacy(adapter),
     })
     return toUIMessageStream({
       stream: result.stream,
       sendReasoning: true,
       sendFinish: true,
-      onError: () => '模型生成失败，请检查模型配置后重试。',
+      onError: describeModelError,
     })
   }
 }
@@ -287,8 +275,8 @@ export class AiService {
   private readonly runner: AiModelRunner
   private readonly garmin: GarminQuery
 
-  constructor(private db: LocalDatabase, private secrets: SecretStore, runner?: AiModelRunner) {
-    this.runner = runner ?? new OpenSourceAiRunner()
+  constructor(private db: LocalDatabase, private secrets: SecretStore, runner?: AiModelRunner, private readonly catalog = new AiCatalog()) {
+    this.runner = runner ?? new OpenSourceAiRunner(catalog)
     this.garmin = new GarminQuery(db)
   }
 
@@ -296,23 +284,28 @@ export class AiService {
     const row = this.db.one<Omit<AiSettings, 'has_api_key'>>('SELECT provider,name,base_url,model,enabled,updated_at FROM ai_settings WHERE id=\'default\'')
     if (!row) return { ...DEFAULTS }
     const provider = normalizeStoredProvider(String(row.provider), row.base_url)
-    const info = providerInfo(provider)
-    return { ...row, provider, name: info.name, base_url: info.base_url, enabled: Boolean(row.enabled), has_api_key: Boolean(this.secrets.get(apiKeySecret(provider)) || this.secrets.get(LEGACY_API_KEY_SECRET)) }
+    this.adoptLegacyKey(provider)
+    return { ...row, provider, enabled: Boolean(row.enabled), has_api_key: Boolean(this.storedKey(provider)) }
   }
 
   async saveSettings(input: Record<string, unknown>): Promise<AiSettings> {
     const provider = input.provider
-    if (typeof provider !== 'string' || !AI_PROVIDERS.some((item) => item.id === provider)) throw new Error('请选择有效的模型供应商')
-    const info = providerInfo(provider as AiProvider)
-    const name = info.name
+    if (typeof provider !== 'string' || !provider) throw new Error('请选择有效的模型供应商')
+    const info = await this.catalog.provider(provider)
     const model = typeof input.model === 'string' ? input.model.trim() : ''
-    if (!model || model.length > 120) throw new Error('请填写有效的模型名称')
-    const baseUrl = normalizeBaseUrl(info.base_url, provider as AiProvider)
+    if (!model || model.length > 160) throw new Error('请填写有效的模型名称')
+    let name: string; let baseUrl: string
+    if (info) { name = info.name; baseUrl = info.base_url }
+    else {
+      name = provider === OLLAMA ? 'Ollama（本机）' : '自定义 OpenAI 兼容接口'
+      const supplied = typeof input.base_url === 'string' ? input.base_url : ''
+      if (provider === CUSTOM && !supplied.trim()) throw new Error('请填写模型服务地址')
+      baseUrl = normalizeBaseUrl(supplied.trim() || OLLAMA_BASE_URL)
+    }
     const clearingKey = input.clear_api_key === true
-    if (typeof input.api_key === 'string' && input.api_key.trim()) this.secrets.set(apiKeySecret(provider as AiProvider), input.api_key.trim())
-    if (clearingKey) { this.secrets.set(apiKeySecret(provider as AiProvider), ''); this.secrets.set(LEGACY_API_KEY_SECRET, '') }
-    const key = this.secrets.get(apiKeySecret(provider as AiProvider)) || this.secrets.get(LEGACY_API_KEY_SECRET) || ''
-    if (info.requires_api_key && !key && !clearingKey) throw new Error(`${info.name} 需要 API Key`)
+    if (typeof input.api_key === 'string' && input.api_key.trim()) this.secrets.set(apiKeySecret(provider), input.api_key.trim())
+    if (clearingKey) this.secrets.set(apiKeySecret(provider), '')
+    if (info?.requires_api_key && !this.storedKey(provider) && !clearingKey) throw new Error(`${info.name} 需要 API Key`)
     const timestamp = new Date().toISOString()
     this.db.run(`INSERT INTO ai_settings (id,owner_id,provider,name,base_url,model,enabled,created_at,updated_at)
       VALUES ('default','local-owner',:provider,:name,:base_url,:model,:enabled,:now,:now)
@@ -322,37 +315,34 @@ export class AiService {
     return this.settings()
   }
 
-  providers(): AiProviderInfo[] {
-    return AI_PROVIDERS.map((item) => ({ ...item, default_models: [...item.default_models] }))
+  providers(): Promise<AiProviderInfo[]> {
+    return this.catalog.list()
   }
 
   async models(input: Record<string, unknown>): Promise<{ models: string[]; source: 'provider' | 'catalog'; warning?: string }> {
     const provider = input.provider
-    if (typeof provider !== 'string' || !AI_PROVIDERS.some((item) => item.id === provider)) throw new Error('请选择有效的模型供应商')
-    const info = providerInfo(provider as AiProvider)
-    const supplied = typeof input.api_key === 'string' ? input.api_key.trim() : ''
-    const key = supplied || this.secrets.get(apiKeySecret(provider as AiProvider)) || (this.settings().provider === provider ? this.secrets.get(LEGACY_API_KEY_SECRET) : '') || ''
-    if (info.requires_api_key && !key) throw new Error('请先填写 API Key，再获取模型列表')
-    try {
-      const response = await fetch(`${info.base_url}/models`, {
-        headers: key ? { authorization: `Bearer ${key}` } : undefined,
-        signal: AbortSignal.timeout(15_000),
-      })
-      if (!response.ok) throw new Error(response.status === 401 || response.status === 403 ? 'API Key 无效或无权读取模型列表' : `供应商返回 ${response.status}`)
-      const body = await response.json() as { data?: Array<{ id?: unknown }>; models?: Array<{ name?: unknown; model?: unknown }> }
-      const ids = [...(body.data ?? []).map((item) => item.id), ...(body.models ?? []).map((item) => item.name ?? item.model)]
-        .filter((id): id is string => typeof id === 'string' && id.length > 0 && id.length <= 160)
-      const models = [...new Set(ids)].filter(isTextModelId).sort((a, b) => a.localeCompare(b))
-      if (!models.length) throw new Error('供应商没有返回可用模型')
-      return { models, source: 'provider' }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : '模型列表获取失败'
-      if (/API Key 无效/.test(message)) throw error
-      const catalog = await modelsDevModels(provider as AiProvider).catch(() => [])
-      const models = catalog.length ? catalog : info.default_models
-      if (!models.length) throw error
-      return { models, source: 'catalog', warning: `${message}，已显示 Models.dev 开源目录` }
+    if (typeof provider !== 'string' || !provider) throw new Error('请选择有效的模型供应商')
+    if (await this.catalog.provider(provider)) {
+      const models = await this.catalog.models(provider)
+      if (!models.length) throw new Error('Models.dev 目录中没有该供应商的对话模型，可直接填写模型名称')
+      return { models, source: 'catalog' }
     }
+    // Ollama and custom endpoints are not in the catalog; ask the endpoint itself.
+    const saved = this.settings()
+    const supplied = typeof input.base_url === 'string' ? input.base_url.trim() : ''
+    const baseUrl = normalizeBaseUrl(supplied || (saved.provider === provider ? saved.base_url : '') || (provider === OLLAMA ? OLLAMA_BASE_URL : ''))
+    const key = (typeof input.api_key === 'string' ? input.api_key.trim() : '') || this.storedKey(provider)
+    const response = await fetch(`${baseUrl}/models`, {
+      headers: key ? { authorization: `Bearer ${key}` } : undefined,
+      signal: AbortSignal.timeout(15_000),
+    })
+    if (!response.ok) throw new Error(response.status === 401 || response.status === 403 ? 'API Key 无效或无权读取模型列表' : `模型服务返回 ${response.status}`)
+    const body = await response.json() as { data?: Array<{ id?: unknown }>; models?: Array<{ name?: unknown; model?: unknown }> }
+    const ids = [...(body.data ?? []).map((item) => item.id), ...(body.models ?? []).map((item) => item.name ?? item.model)]
+      .filter((id): id is string => typeof id === 'string' && id.length > 0 && id.length <= 160)
+    const models = [...new Set(ids)].filter(isTextModelId).sort((a, b) => a.localeCompare(b))
+    if (!models.length) throw new Error('模型服务没有返回可用模型，可直接填写模型名称')
+    return { models, source: 'provider' }
   }
 
   async test(): Promise<void> {
@@ -489,10 +479,31 @@ export class AiService {
     return settings
   }
 
+  // Keys are never shared between providers: one sent to the wrong vendor is a leaked key.
   private apiKey(settings: AiSettings): string {
-    const key = this.secrets.get(apiKeySecret(settings.provider)) || this.secrets.get(LEGACY_API_KEY_SECRET) || ''
-    if (providerInfo(settings.provider).requires_api_key && !key) throw new Error(`${settings.name} 连接需要 API Key`)
+    const key = this.storedKey(settings.provider)
+    if (!key && settings.provider !== OLLAMA && settings.provider !== CUSTOM && !isLocal(settings.base_url)) throw new Error(`${settings.name} 连接需要 API Key`)
     return key
+  }
+
+  /** The provider's own key, moved over from its pre-Models.dev id the first time it is read. */
+  private storedKey(provider: string): string {
+    const key = this.secrets.get(apiKeySecret(provider))
+    if (key) return key
+    const previous = Object.keys(RENAMED_PROVIDERS).find((id) => RENAMED_PROVIDERS[id] === provider)
+    const moved = previous ? this.secrets.get(apiKeySecret(previous)) : null
+    if (!previous || !moved) return ''
+    this.secrets.set(apiKeySecret(provider), moved)
+    this.secrets.set(apiKeySecret(previous), '')
+    return moved
+  }
+
+  /** Builds before 0.2.0 kept one key for whichever provider was active; it belongs to that provider alone. */
+  private adoptLegacyKey(provider: string): void {
+    const legacy = this.secrets.get(LEGACY_API_KEY_SECRET)
+    if (!legacy) return
+    if (!this.storedKey(provider)) this.secrets.set(apiKeySecret(provider), legacy)
+    this.secrets.set(LEGACY_API_KEY_SECRET, '')
   }
 
   private fingerprint(profileId: string): string {
@@ -518,34 +529,23 @@ export class AiService {
   }
 }
 
-function normalizeStoredProvider(provider: string, baseUrl: string): AiProvider {
-  if (AI_PROVIDERS.some((item) => item.id === provider)) return provider as AiProvider
+function normalizeStoredProvider(provider: string, baseUrl: string): string {
+  if (RENAMED_PROVIDERS[provider]) return RENAMED_PROVIDERS[provider]
+  // Builds before 0.2.0 saved every endpoint as one generic provider.
   if (provider === 'openai-compatible') {
     if (baseUrl.includes('deepseek.com')) return 'deepseek'
-    if (baseUrl.includes('siliconflow')) return 'siliconflow'
+    if (baseUrl.includes('siliconflow')) return 'siliconflow-cn'
     if (baseUrl.includes('openrouter.ai')) return 'openrouter'
-    if (baseUrl.includes('moonshot')) return 'moonshot'
-    if (baseUrl.includes('dashscope')) return 'dashscope'
-    return 'ollama'
+    if (baseUrl.includes('moonshot')) return 'moonshotai-cn'
+    if (baseUrl.includes('dashscope')) return 'alibaba-cn'
+    return baseUrl.includes(':11434') ? OLLAMA : CUSTOM
   }
-  return 'deepseek'
+  return provider
 }
 
+/** Endpoints outside the catalog list every model they serve; keep the ones that chat. */
 function isTextModelId(id: string): boolean {
-  return !/(?:embedding|embed|whisper|tts|speech|audio|image|dall-e|moderation|transcri)/i.test(id)
-}
-
-async function modelsDevModels(provider: AiProvider): Promise<string[]> {
-  const catalogIds: Record<AiProvider, string | null> = {
-    deepseek: 'deepseek', openai: 'openai', siliconflow: 'siliconflow-cn', openrouter: 'openrouter',
-    moonshot: 'moonshotai-cn', dashscope: 'alibaba-cn', ollama: null,
-  }
-  const id = catalogIds[provider]
-  if (!id) return []
-  const response = await fetch('https://models.dev/api.json', { signal: AbortSignal.timeout(12_000) })
-  if (!response.ok) return []
-  const body = await response.json() as Record<string, { models?: Record<string, unknown> }>
-  return Object.keys(body[id]?.models ?? {}).filter(isTextModelId).sort((a, b) => a.localeCompare(b)).slice(0, 400)
+  return !/(?:embedding|embed|rerank|whisper|tts|speech|audio|image|dall-e|moderation|transcri|realtime)/i.test(id)
 }
 
 function dimensionLabel(value: InsightRequest['dimension']): string {

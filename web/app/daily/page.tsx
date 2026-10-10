@@ -15,6 +15,7 @@ import type { FitnessAge, GarminDashboard, GarminSettings, GarminDailyPoint, Gar
 const number = (value: number | null | undefined) => value == null ? '—' : Math.round(value).toLocaleString('zh-CN');
 const formatTime = (value: string | null | undefined) => value ? new Date(value).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '尚未同步';
 const failureText = (reason: unknown, fallback: string) => reason instanceof ApiError ? [reason.message, reason.stage, reason.hint].filter(Boolean).join(' · ') : reason instanceof Error ? reason.message : fallback;
+const CHAT_EXAMPLES = ['这段时间睡眠和 HRV 有什么变化？', '最近运动量和上个月比怎么样？', '我的身体年龄主要受什么影响？', '哪几天恢复得最差，可能是什么原因？'];
 
 export default function DailyHealthPage() {
   const { activeProfile, activeProfileId } = useProfiles();
@@ -134,8 +135,8 @@ export default function DailyHealthPage() {
         </div>
         {selectedDate && <section className="gd-card gd-day-detail"><div className="gd-card-title"><h2>{selectedDate} · 运动记录</h2><button aria-label="关闭运动详情" onClick={()=>setSelectedDate(null)}><X /></button></div>{selected.length ? selected.map(a=><div key={a.activity_id}><PersonSimpleRun /><strong>{a.name}</strong><span>{activityLabels[a.type] ?? a.type} · {Math.round(a.duration_seconds/60)} 分钟{a.distance_m !== null ? ` · ${(a.distance_m/1000).toFixed(2)} km` : ''}</span></div>) : <p>当天没有已同步的运动记录。</p>}</section>}
         <div className="gd-trends"><Trend title="睡眠分数" icon={<MoonStars weight="fill" />} field="sleep_score" data={data?.trends ?? []} from={range.from} to={shownTo} label={label} unit="分" color="var(--series-1)" /><Trend title="HRV（毫秒）" icon={<Heart weight="fill" />} field="hrv_last_night" data={data?.trends ?? []} from={range.from} to={shownTo} label={label} unit="ms" color="var(--series-3)" /></div>
-        <div className="gd-bottom"><section className="gd-card gd-chat-teaser"><h2><Robot />AI 问答</h2><p>有什么想了解的？比如：</p><p className="gd-examples">“这段时间睡眠和 HRV 有什么变化？”　“最近运动量和上个月比怎么样？”</p><button onClick={()=>setChat(true)}>向 AI 提问你的健康问题…<ArrowRight /></button><small>AI 会按需查询已同步的 Garmin 数据</small></section></div>
-      </div><DailyInsightsPanel profileId={activeProfileId} from={range.from} to={shownTo} refreshKey={data?.last_sync_at ?? null} onFitnessAge={setFitness} /></div>
+      </div><section className="gd-card gd-chat-teaser"><h2><Robot />AI 问答</h2><p>有什么想了解的？比如：</p><ul className="gd-examples">{CHAT_EXAMPLES.map(question => <li key={question}>“{question}”</li>)}</ul><button onClick={()=>setChat(true)}>向 AI 提问你的健康问题…<ArrowRight /></button><small>AI 会按需查询已同步的 Garmin 数据</small></section></div>
+      <DailyInsightsPanel profileId={activeProfileId} from={range.from} to={shownTo} refreshKey={data?.last_sync_at ?? null} onFitnessAge={setFitness} />
     </>}
     {chat && <div className="gd-modal" role="dialog" aria-modal="true" aria-label="AI 健康问答" onKeyDown={e=>{if(e.key==='Escape')setChat(false);}}><div><button autoFocus className="gd-modal-close" aria-label="关闭 AI 问答" onClick={()=>setChat(false)}><X /></button><HealthChat profileId={activeProfileId} profileName={activeProfile?.name ?? '当前档案'} variant="daily" /></div></div>}
   </div>;

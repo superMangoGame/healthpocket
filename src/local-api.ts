@@ -12,7 +12,7 @@ import { METRICS, ORGAN_LABELS } from './metrics.ts'
 import { ANATOMY } from '../web/lib/anatomy.ts'
 import { inspectPdf, parsePdf, type ParsedReport } from './parser.ts'
 import { buildDailyInsights, type DailyInsights } from './daily-insights.ts'
-import { AiService, type AiModelRunner, type InsightRequest, type SecretStore } from './ai.ts'
+import { AiService, describeModelError, type AiModelRunner, type InsightRequest, type SecretStore } from './ai.ts'
 import { GarminActionError, GarminService, GarminSyncBusyError, type GarminClientFactory, type GarminServiceOptions } from './garmin.ts'
 
 export const PARSER_VERSION = '2026.10-anatomy.1'
@@ -240,10 +240,10 @@ export class LocalApi {
   private async dispatch(req: IncomingMessage, res: ServerResponse, path: string, query: URLSearchParams): Promise<void> {
     const method = req.method ?? 'GET'
     if (path === '/health' && method === 'GET') return json(res, 200, { status: 'ok', parser_version: PARSER_VERSION, rules_version: RULES_VERSION, runtime: 'typescript', queue: this.queueStatus() })
-    if (path === '/ai/providers' && method === 'GET') return json(res, 200, this.ai.providers())
+    if (path === '/ai/providers' && method === 'GET') return json(res, 200, await this.ai.providers())
     if (path === '/ai/models' && method === 'POST') {
       try { return json(res, 200, await this.ai.models(await readJson(req))) }
-      catch (error) { throw new HttpError(422, modelError(error)) }
+      catch (error) { throw new HttpError(422, describeModelError(error)) }
     }
     if (path === '/ai/settings' && method === 'GET') return json(res, 200, this.ai.settings())
     if (path === '/ai/settings' && method === 'PUT') {
@@ -252,7 +252,7 @@ export class LocalApi {
     }
     if (path === '/ai/test' && method === 'POST') {
       try { await this.ai.test(); return json(res, 200, { ok: true }) }
-      catch (error) { throw new HttpError(502, modelError(error)) }
+      catch (error) { throw new HttpError(502, describeModelError(error)) }
     }
     if (path === '/ai/chat' && method === 'POST') {
       const payload = await readJson(req, 512 * 1024)
@@ -276,7 +276,7 @@ export class LocalApi {
       if (dimension === 'custom' && !question) throw new HttpError(422, '请输入希望分析的问题')
       const conversation = chatContext(payload.conversation)
       try { return json(res, 201, await this.ai.generate({ profile_id: profile, dimension, year_from: yearFrom, year_to: yearTo, question, conversation } as InsightRequest)) }
-      catch (error) { throw new HttpError(502, modelError(error)) }
+      catch (error) { throw new HttpError(502, describeModelError(error)) }
     }
     if (path === '/garmin/settings' && method === 'GET') return json(res, 200, { ...this.garmin.settings(), feature_enabled: this.garminEnabled() })
     if (path === '/garmin/settings' && method === 'PUT') {
@@ -616,14 +616,6 @@ function nullableYear(value: unknown): number | null {
   const year = Number(value)
   if (!Number.isInteger(year) || year < 1900 || year > 2200) throw new HttpError(422, '年份无效')
   return year
-}
-
-function modelError(error: unknown): string {
-  const message = error instanceof Error ? error.message : '模型调用失败'
-  if (/timeout|timed out|abort/i.test(message)) return '模型响应超时，请检查服务状态或稍后重试'
-  if (/fetch|network|connect|ECONN|ENOTFOUND/i.test(message)) return '无法连接模型服务，请检查地址和网络'
-  if (/401|403|api.?key|unauthorized|forbidden/i.test(message)) return '模型服务拒绝访问，请检查 API Key 和账号权限'
-  return message.slice(0, 500)
 }
 
 /**

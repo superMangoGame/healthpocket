@@ -18,7 +18,7 @@ const LEVEL_LABEL = { important: "重点", attention: "关注", good: "良好" }
 const PRIORITY_LABEL = { high: "优先", medium: "建议", low: "可选" } as const;
 
 /**
- * The "健康洞察" column of the daily page: Garmin body age with what moves it,
+ * The full-width "健康洞察" section of the daily page: Garmin body age with what moves it,
  * rule-based insights that join the checkup report with sleep, training and
  * recovery, and on demand an AI write-up of the same data.
  */
@@ -55,7 +55,7 @@ export function DailyInsightsPanel({ profileId, from, to, refreshKey, onFitnessA
 
   const insights = (data?.insights ?? []).filter((item) => item.category !== "body_age");
   return (
-    <aside className="gd-card gd-insights">
+    <section className="gd-card gd-insights">
       <h2><Robot />健康洞察 <span>体检 × 睡眠 × 运动</span></h2>
       <p>结合最近一次体检报告和{from} 至 {to} 的 Garmin 记录。</p>
       {error && <div className="error" role="alert">{error}</div>}
@@ -65,7 +65,7 @@ export function DailyInsightsPanel({ profileId, from, to, refreshKey, onFitnessA
         {!insights.length && !data?.fitness_age && <p className="gd-insight-empty">同步 Garmin 数据或上传体检报告后，这里会给出结合两者的建议。</p>}
         <AdviceSection advice={advice} advising={advising} error={adviceError} onGenerate={() => void generate()} />
       </>}
-    </aside>
+    </section>
   );
 }
 

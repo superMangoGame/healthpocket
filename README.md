@@ -27,7 +27,7 @@ https://github.com/user-attachments/assets/5c824726-e207-4e2b-a884-dd4253660710
 - 📈 **指标趋势**：血压、血常规、血脂等指标按年份画成曲线，每个数字都能追溯到原报告页码。
 - 🫀 **3D 人体图谱**：基于 BodyParts3D 的 2,234 个中文标注结构，异常器官直接在身上标红。
 - 👨‍👩‍👧 **家庭档案**：每个家庭成员独立管理。
-- 🤖 **AI 洞察（可选，默认关闭）**：可接 DeepSeek、OpenAI、硅基流动、OpenRouter、Moonshot、阿里云百炼或本地 Ollama。发送前会去掉姓名、手机号等个人标识。
+- 🤖 **AI 洞察（可选，默认关闭）**：供应商和模型列表来自开源的 [Models.dev](https://models.dev) 目录，常用的有 DeepSeek、硅基流动、阿里云百炼、Moonshot（Kimi）、智谱、OpenRouter、OpenAI、Claude、Gemini，也可接本地 Ollama 或任意 OpenAI 兼容接口。发送前会去掉姓名、手机号等个人标识。
 - ⌚ **Garmin 同步（实验性，默认关闭）**：同步睡眠、心率、HRV、压力、步数和运动记录。
 
 > [!NOTE]
@@ -84,7 +84,7 @@ tests/      运行时回归测试
 
 - **全部在本机处理**：PDF 解析、数据库和人体模型都在本地运行，没有广告和遥测。
 - **数据目录**：`~/.healthpocket/`，放在 vault 之外，不会被 Obsidian Sync 同步，卸载插件也不会删除。可以用 `HEALTHPOCKET_DATA_DIR` 换成别的目录。
-- **会联网的情况**：只有你主动启用 AI 洞察或 Garmin 同步之后才会联网。API Key 和 Garmin 令牌保存在 Obsidian SecretStorage 中，Garmin 密码登录后立即丢弃。
+- **会联网的情况**：只有你主动启用 AI 洞察或 Garmin 同步之后才会联网。打开 AI 设置时会从 Models.dev 读取公开的模型目录，不附带任何个人数据；读不到时改用插件内置的目录。API Key 和 Garmin 令牌保存在 Obsidian SecretStorage 中，Garmin 密码登录后立即丢弃。
 - **本地服务**：界面通过只绑定 `127.0.0.1` 的本地服务展示，每次加载插件都会生成随机访问令牌。
 
 > [!WARNING]
