@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { DashboardTrend } from "@/components/DashboardTrend";
 import { EmptyState } from "@/components/EmptyState";
 import { StatusBadge } from "@/components/StatusBadge";
+import { ReportInsightsPanel } from "@/components/ReportInsightsPanel";
 import { RiskAtlas } from "@/components/RiskAtlas";
 import { UploadDialog } from "@/components/UploadDialog";
 import { apiFetch, withProfile } from "@/lib/api";
@@ -93,6 +94,7 @@ export default function DashboardPage() {
               />
             </div>
           </section>
+          <ReportInsightsPanel profileId={activeProfileId} />
           <section className="dashboard-grid">
             <div>
               <div className="section-head">

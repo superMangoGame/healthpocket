@@ -396,6 +396,72 @@ test('AI providers come from the Models.dev catalog, calls stream, and keys neve
   }
 })
 
+test('daily advice reads Garmin only, the overview reads reports only, and the AI 洞察 advice joins both', async () => {
+  const folder = await mkdtemp(join(tmpdir(), 'healthpocket-ai-scope-'))
+  const previous = process.env.HEALTHPOCKET_DATA_DIR; process.env.HEALTHPOCKET_DATA_DIR = folder
+  const secretValues = new Map<string, string>()
+  const calls: Array<{ system: string; data: Record<string, unknown> }> = []
+  const runner: AiModelRunner = {
+    async test() {},
+    async generate(): Promise<InsightOutput> {
+      return { summary: '血脂需要关注。', highlights: [{ title: '总胆固醇偏高', explanation: '高于参考范围。', level: 'attention', evidence_ids: ['E001'] }], limitations: [], doctor_questions: [] }
+    },
+    async advise(_settings, _key, prompt, system) {
+      calls.push({ system, data: (JSON.parse(prompt) as { data: Record<string, unknown> }).data })
+      return { summary: /体检报告和 Garmin/.test(system) ? '综合建议' : '日常建议', recommendations: [{ title: '固定作息', category: 'sleep', priority: 'high', why: '睡眠偏短。', actions: ['每天 7:00 起床'] }], cautions: [] }
+    },
+  }
+  const backend = new BackendManager(folder, { secretStore: { get: (id) => secretValues.get(id) ?? null, set: (id, value) => { secretValues.set(id, value) } }, aiRunner: runner })
+  const server = createServer((req, res) => { void backend.proxy(req, res).catch((error: unknown) => { res.writeHead(500); res.end(String(error)) }) })
+  const day = (offset: number) => { const d = new Date(); d.setDate(d.getDate() - offset); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}` }
+  const post = (path: string, body: unknown) => fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+  try {
+    await backend.ensureStarted(); server.listen(0, '127.0.0.1'); await once(server, 'listening')
+    const address = server.address(); assert.ok(address && typeof address !== 'string')
+    const api = `http://127.0.0.1:${address.port}${API_PREFIX}`
+    const profile = (await (await fetch(`${api}/profiles`)).json())[0]
+    const timestamp = new Date().toISOString()
+    backend.database.run(`INSERT INTO reports (id,owner_id,profile_id,filename,stored_path,sha256,size_bytes,year,template_type,parse_status,parser_version,created_at,updated_at)
+      VALUES ('scope-report','local-owner',:profile,'scope.pdf',:path,:sha,10,2025,'test','completed','test',:time,:time)`,
+    { profile: profile.id, path: join(folder, 'scope.pdf'), sha: 'd'.repeat(64), time: timestamp })
+    backend.database.run(`INSERT INTO measurements (id,owner_id,report_id,canonical_id,raw_name,value_numeric,unit,ref_high,ref_text,status,category,organ,confidence,page,raw_text)
+      VALUES ('scope-measurement','local-owner','scope-report','total_cholesterol','总胆固醇',6.8,'mmol/L',5.2,'<5.2','abnormal','血脂','heart',0.98,2,'raw')`)
+    for (let offset = 0; offset < 10; offset++) {
+      backend.database.run(`INSERT INTO garmin_daily (profile_id,date,steps,sleep_seconds,sleep_score,hrv_last_night,resting_hr,intensity_minutes,raw_json,fetched_at) VALUES (:p,:d,7000,19800,60,45,58,20,'{}','now')`, { p: profile.id, d: day(offset) })
+    }
+    // Daily advice saved before the split also drew on the reports; it must not resurface.
+    backend.database.run(`INSERT INTO ai_insights (id,owner_id,profile_id,dimension,model,summary,content_json,evidence_json,data_fingerprint,created_at)
+      VALUES ('old-daily','local-owner',:p,'daily','m','旧建议','{}','{"range":null}','x',:t)`, { p: profile.id, t: timestamp })
+    assert.equal((await fetch(`${api}/ai/settings`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ provider: 'deepseek', model: 'm', api_key: 'k' }) })).status, 200)
+
+    const range = `from=${day(9)}&to=${day(0)}`
+    const daily = await (await fetch(`${api}/daily/insights?profile_id=${profile.id}&${range}`)).json()
+    assert.ok(daily.insights.some((item: { id: string }) => item.id === 'sleep-duration'))
+    assert.ok(daily.insights.every((item: { category: string }) => item.category !== 'report'), 'the daily page reads Garmin only')
+    assert.equal('latest_report' in daily.context, false); assert.equal(daily.advice, null)
+
+    assert.equal((await post(`${api}/daily/advice`, { profile_id: profile.id, from: day(9), to: day(0) })).status, 200)
+    assert.match(calls[0]!.system, /只根据 Garmin/); assert.doesNotMatch(JSON.stringify(calls[0]!.data), /胆固醇/)
+
+    assert.equal(await (await fetch(`${api}/ai/advice?profile_id=${profile.id}`)).json(), null)
+    assert.equal((await post(`${api}/ai/advice`, { profile_id: profile.id })).status, 200)
+    assert.match(calls[1]!.system, /体检报告和 Garmin/)
+    assert.match(JSON.stringify(calls[1]!.data.reports), /总胆固醇/); assert.ok(calls[1]!.data.garmin, 'synced Garmin days join the reports')
+    assert.equal((await (await fetch(`${api}/ai/advice?profile_id=${profile.id}`)).json()).content.summary, '综合建议')
+    assert.equal((await (await fetch(`${api}/daily/insights?profile_id=${profile.id}&${range}`)).json()).advice.content.summary, '日常建议')
+
+    assert.equal((await post(`${api}/ai/insights`, { profile_id: profile.id, dimension: 'comprehensive' })).status, 201)
+    const listed = await (await fetch(`${api}/ai/insights?profile_id=${profile.id}`)).json()
+    assert.deepEqual(listed.map((item: { dimension: string; stale: boolean }) => [item.dimension, item.stale]), [['comprehensive', false]], 'advice records stay out of the report list')
+    backend.database.run(`UPDATE reports SET updated_at=:t WHERE id='scope-report'`, { t: new Date(Date.now() + 60_000).toISOString() })
+    assert.equal((await (await fetch(`${api}/ai/insights?profile_id=${profile.id}`)).json())[0].stale, true)
+  } finally {
+    server.closeAllConnections(); server.close(); backend.dispose(); await backend.database.close()
+    if (previous === undefined) delete process.env.HEALTHPOCKET_DATA_DIR; else process.env.HEALTHPOCKET_DATA_DIR = previous
+    await rm(folder, { recursive: true, force: true })
+  }
+})
+
 test('AI chat sees a Garmin overview for the page range and can query Garmin data through profile-bound tools', async () => {
   const folder = await mkdtemp(join(tmpdir(), 'healthpocket-ai-garmin-'))
   const previous = process.env.HEALTHPOCKET_DATA_DIR; process.env.HEALTHPOCKET_DATA_DIR = folder

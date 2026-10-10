@@ -1,6 +1,6 @@
 {
   "name": "healthpocket-obsidian",
-  "version": "0.4.7",
+  "version": "0.4.8",
   "description": "本地优先的 Obsidian 体检报告管理插件",
   "private": true,
   "type": "module",

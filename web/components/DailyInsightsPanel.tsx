@@ -1,26 +1,18 @@
 "use client";
 
-import { ArrowClockwise, Barbell, CheckCircle, FileText, Heart, MoonStars, PersonSimpleRun, Robot, Sparkle, Warning } from "@phosphor-icons/react";
-import { useEffect, useState, type ReactNode } from "react";
+import { ArrowClockwise, CheckCircle, Robot, Sparkle, Warning } from "@phosphor-icons/react";
+import { useEffect, useState } from "react";
+import { AdviceContent, CATEGORY_ICON } from "@/components/AdviceContent";
 import { apiFetch, withProfile } from "@/lib/api";
 import type { DailyAdvice, DailyInsight, DailyInsights, FitnessAge } from "@/lib/types";
 
-const CATEGORY_ICON: Record<string, ReactNode> = {
-  body_age: <PersonSimpleRun weight="fill" />,
-  sleep: <MoonStars weight="fill" />,
-  activity: <Barbell weight="fill" />,
-  recovery: <Heart weight="fill" />,
-  report: <FileText weight="fill" />,
-  checkup: <FileText weight="fill" />,
-  nutrition: <Sparkle weight="fill" />,
-};
 const LEVEL_LABEL = { important: "重点", attention: "关注", good: "良好" } as const;
-const PRIORITY_LABEL = { high: "优先", medium: "建议", low: "可选" } as const;
 
 /**
- * The full-width "健康洞察" section of the daily page: Garmin body age with what moves it,
- * rule-based insights that join the checkup report with sleep, training and
- * recovery, and on demand an AI write-up of the same data.
+ * The full-width "健康洞察" section of the daily page, from Garmin data only
+ * (checkup reports are read on the overview page). Cards state what the data
+ * shows; the advice below is one list - the AI's once generated, otherwise the
+ * rules' - so the two never sit side by side disagreeing.
  */
 export function DailyInsightsPanel({ profileId, from, to, refreshKey, onFitnessAge }: {
   profileId: string | null; from: string; to: string; refreshKey: string | null;
@@ -56,14 +48,14 @@ export function DailyInsightsPanel({ profileId, from, to, refreshKey, onFitnessA
   const insights = (data?.insights ?? []).filter((item) => item.category !== "body_age");
   return (
     <section className="gd-card gd-insights">
-      <h2><Robot />健康洞察 <span>体检 × 睡眠 × 运动</span></h2>
-      <p>结合最近一次体检报告和{from} 至 {to} 的 Garmin 记录。</p>
+      <h2><Robot />健康洞察 <span>基于 Garmin 数据</span></h2>
+      <p>{from} 至 {to} 的睡眠、运动与恢复记录。体检报告的解读在「健康总览」。</p>
       {error && <div className="error" role="alert">{error}</div>}
       {loading && !data ? <div className="skeleton" style={{ height: 320, borderRadius: 11 }} /> : <>
         <BodyAgeCard fitness={data?.fitness_age ?? null} />
         {insights.map((item) => <InsightCard key={item.id} insight={item} />)}
-        {!insights.length && !data?.fitness_age && <p className="gd-insight-empty">同步 Garmin 数据或上传体检报告后，这里会给出结合两者的建议。</p>}
-        <AdviceSection advice={advice} advising={advising} error={adviceError} onGenerate={() => void generate()} />
+        {!insights.length && !data?.fitness_age && <p className="gd-insight-empty">同步 Garmin 数据后，这里会给出睡眠、运动和恢复方面的洞察。</p>}
+        <AdviceSection advice={advice} rules={data?.insights ?? []} advising={advising} error={adviceError} onGenerate={() => void generate()} />
       </>}
     </section>
   );
@@ -74,7 +66,6 @@ function BodyAgeCard({ fitness }: { fitness: FitnessAge | null }) {
     return <article className="gd-bodyage empty"><span className="gd-icon">{CATEGORY_ICON.body_age}</span><div><h3>身体年龄</h3><p>暂无数据。点击右上角「手动同步」从 Garmin 获取身体年龄及其影响因素。</p></div></article>;
   }
   const gap = fitness.chronological_age !== null ? Math.round((fitness.chronological_age - fitness.fitness_age) * 10) / 10 : null;
-  const weak = fitness.components.filter((item) => !item.on_target);
   return (
     <article className="gd-bodyage">
       <div className="gd-bodyage-head">
@@ -99,10 +90,6 @@ function BodyAgeCard({ fitness }: { fitness: FitnessAge | null }) {
           </li>
         ))}
       </ul>
-      <div className="gd-bodyage-advice">
-        <h4>改善建议</h4>
-        {(weak.length ? weak : fitness.components.slice(0, 1)).map((item) => <p key={item.key}><b>{item.label}：</b>{item.advice}</p>)}
-      </div>
     </article>
   );
 }
@@ -114,37 +101,27 @@ function InsightCard({ insight }: { insight: DailyInsight }) {
       <div>
         <h3>{insight.title}<em>{LEVEL_LABEL[insight.level]}</em></h3>
         <p>{insight.finding}</p>
-        <p className="gd-insight-advice">{insight.advice}</p>
-        <small className="gd-insight-sources">{insight.sources.join(" · ")}</small>
       </div>
     </article>
   );
 }
 
-function AdviceSection({ advice, advising, error, onGenerate }: { advice: DailyAdvice | null; advising: boolean; error: string; onGenerate: () => void }) {
+function AdviceSection({ advice, rules, advising, error, onGenerate }: { advice: DailyAdvice | null; rules: DailyInsight[]; advising: boolean; error: string; onGenerate: () => void }) {
+  const pending = rules.filter((item) => item.level !== "good");
   return (
     <section className="gd-advice">
       <div className="gd-advice-head">
-        <h3><Sparkle weight="fill" />AI 个性化建议</h3>
+        <h3><Sparkle weight="fill" />{advice ? "AI 个性化建议" : "建议"}</h3>
         <button className="button" disabled={advising} onClick={onGenerate}>
           <ArrowClockwise className={advising ? "batch-spinner" : ""} />{advising ? "分析中…" : advice ? "重新分析" : "AI 深度分析"}
         </button>
       </div>
       {error && <p className="gd-advice-error">{error}{/未配置|API Key|模型/.test(error) ? "，可在设置页配置 AI 模型。" : ""}</p>}
-      {!advice && !error && <p className="gd-advice-hint">{advising ? "正在结合体检、睡眠、运动和身体年龄生成建议，约需 20–60 秒…" : "让已配置的 AI 模型综合所有数据，给出按优先级排序、可执行的建议。"}</p>}
-      {advice && <>
-        <p className="gd-advice-summary">{advice.content.summary}</p>
-        <ol className="gd-advice-list">
-          {advice.content.recommendations.map((item, index) => (
-            <li key={index}>
-              <h4><span className="gd-icon">{CATEGORY_ICON[item.category] ?? <Sparkle weight="fill" />}</span>{item.title}<em className={`priority-${item.priority}`}>{PRIORITY_LABEL[item.priority]}</em></h4>
-              <p>{item.why}</p>
-              <ul>{item.actions.map((action, i) => <li key={i}>{action}</li>)}</ul>
-            </li>
-          ))}
-        </ol>
-        {advice.content.cautions.length > 0 && <div className="gd-advice-cautions">{advice.content.cautions.map((text, i) => <p key={i}>{text}</p>)}</div>}
-        <small className="gd-advice-meta">{advice.model} · {new Date(advice.created_at).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}{advice.range ? ` · 基于 ${advice.range.from} 至 ${advice.range.to}` : ""}</small>
+      {advising && <p className="gd-advice-hint">正在根据睡眠、运动、恢复和身体年龄生成建议，约需 20–60 秒…</p>}
+      {advice ? <AdviceContent advice={advice} /> : <>
+        {pending.length ? <ul className="gd-advice-rules">{pending.map((item) => <li key={item.id}><b>{item.title}：</b>{item.advice}</li>)}</ul>
+          : rules.length > 0 && <p className="gd-advice-hint">各项都在目标范围内，保持当前的训练与作息即可。</p>}
+        {!advising && rules.length > 0 && <p className="gd-advice-hint">以上是按通用标准生成的建议。点击「AI 深度分析」，让 AI 结合你的数据给出排好优先级的个性化建议，生成后会替换这里的内容。</p>}
       </>}
     </section>
   );

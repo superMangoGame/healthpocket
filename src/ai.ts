@@ -82,9 +82,9 @@ const adviceSchema = z.object({
     category: z.enum(['sleep', 'activity', 'recovery', 'nutrition', 'body_age', 'checkup']).catch('activity'),
     priority: z.enum(['high', 'medium', 'low']).catch('medium'),
     why: clip(600),
-    actions: z.array(clip(240)).min(1).transform((items) => items.slice(0, 5)),
-  })).min(1).transform((items) => items.slice(0, 8)),
-  cautions: z.array(clip(400)).default([]).transform((items) => items.slice(0, 5)),
+    actions: z.array(clip(240)).min(1).transform((items) => items.slice(0, 3)),
+  })).min(1).transform((items) => items.slice(0, 4)),
+  cautions: z.array(clip(400)).default([]).transform((items) => items.slice(0, 2)),
 })
 
 export type AdviceOutput = z.infer<typeof adviceSchema>
@@ -93,7 +93,7 @@ export interface AiModelRunner {
   test(settings: AiSettings, apiKey: string): Promise<void>
   generate(settings: AiSettings, apiKey: string, prompt: string): Promise<InsightOutput>
   stream?(settings: AiSettings, apiKey: string, messages: ModelMessage[], tools?: ToolSet): ReadableStream<UIMessageChunk> | Promise<ReadableStream<UIMessageChunk>>
-  advise?(settings: AiSettings, apiKey: string, prompt: string): Promise<AdviceOutput>
+  advise?(settings: AiSettings, apiKey: string, prompt: string, system: string): Promise<AdviceOutput>
 }
 
 const LEGACY_API_KEY_SECRET = 'heathpocket-ai-api-key'
@@ -179,7 +179,7 @@ export class OpenSourceAiRunner implements AiModelRunner {
     const result = await complete({
       model,
       system: SYSTEM_PROMPT,
-      prompt: `${prompt}\n\n仅输出一个 JSON 对象，字段必须为 summary、highlights、limitations、doctor_questions。highlights 每项包含 title、explanation、level（observation/attention/important）和 evidence_ids。不要使用 Markdown 代码块。`,
+      prompt: `${prompt}\n\n仅输出一个 JSON 对象，字段必须为 summary、highlights、limitations、doctor_questions。highlights 每项包含 title、explanation、level（observation/attention/important）和 evidence_ids。summary 不超过 100 字；highlights 按重要性排序、最多 6 条，explanation 不超过两句；doctor_questions 最多 4 条，limitations 最多 3 条。不要使用 Markdown 代码块。`,
       maxOutputTokens: REASONING_OUTPUT_TOKENS,
       maxRetries: 1,
       timeout: 120_000,
@@ -188,11 +188,11 @@ export class OpenSourceAiRunner implements AiModelRunner {
     return insightSchema.parse(parseJsonObject(result.text))
   }
 
-  async advise(settings: AiSettings, apiKey: string, prompt: string): Promise<AdviceOutput> {
+  async advise(settings: AiSettings, apiKey: string, prompt: string, system: string): Promise<AdviceOutput> {
     const { model, adapter } = await this.catalog.resolve(settings, apiKey)
     const result = await complete({
-      model, system: ADVICE_SYSTEM_PROMPT,
-      prompt: `${prompt}\n\n仅输出一个 JSON 对象，字段为 summary、recommendations、cautions。recommendations 每项包含 title、category（sleep/activity/recovery/nutrition/body_age/checkup）、priority（high/medium/low）、why、actions（1–5 条具体可执行的动作）；recommendations 最多 6 条，cautions 最多 4 条。不要使用 Markdown 代码块。`,
+      model, system,
+      prompt: `${prompt}\n\n仅输出一个 JSON 对象，字段为 summary、recommendations、cautions。recommendations 每项包含 title、category（sleep/activity/recovery/nutrition/body_age/checkup）、priority（high/medium/low）、why（一句话）、actions（1–3 条具体可执行的动作）；recommendations 最多 4 条，cautions 最多 2 条。不要使用 Markdown 代码块。`,
       maxOutputTokens: REASONING_OUTPUT_TOKENS, maxRetries: 1, timeout: 120_000, ...privacy(adapter),
     })
     if (!result.text.trim() && result.finishReason === 'length') throw new Error('模型思考过程耗尽了输出长度，未给出结果，请重试或换用非推理模型')
@@ -231,14 +231,34 @@ const SYSTEM_RULES = `你不能诊断疾病、预测疾病概率、建议用药�
 const SYSTEM_PROMPT = `你是健康报告整理助手。你只能解释用户提供的体检报告记录。不得执行工具。每项重要判断必须引用提供的 evidence_id。
 ${SYSTEM_RULES}`
 
-const ADVICE_SYSTEM_PROMPT = `你是健康生活方式教练，帮助用户把体检报告、Garmin 手表记录的睡眠、运动、恢复数据和身体年龄联系起来，给出个性化、可执行的生活方式建议。
+/**
+ * Where each piece of advice draws from. The daily page reads Garmin alone and
+ * the overview page the reports alone, so neither contradicts the other on the
+ * same number; the AI 洞察 page is the one place that joins them.
+ */
+export type AdviceScope = 'daily' | 'combined'
+
+const DAILY_ADVICE_PROMPT = `你是运动与恢复教练，只根据 Garmin 手表记录的睡眠、运动、恢复数据和身体年龄，给出个性化、可执行的生活方式建议。资料中没有体检报告，不要推测或提及体检指标。
 ${SYSTEM_RULES}
 要求：
-1. 每条建议都要说明依据（why），并引用具体数值和来源，例如“体检 2026-08 舒张压 59 mmHg”“近 30 天每周约 78 强度分钟”。优先寻找跨数据源的关联（如体检指标与运动量、睡眠与 HRV、身体年龄因子与训练结构）。
+1. 每条建议的依据（why）只写一句话，引用具体数值和日期范围，例如“近 30 天每周约 78 强度分钟”。优先寻找指标之间的关联（如睡眠与 HRV、训练负荷与静息心率、身体年龄因子与训练结构）。
 2. actions 必须具体、可衡量（频率、时长、强度或数量），避免“注意休息”“均衡饮食”这类空话。
-3. 按影响从高到低排序，最多 6 条；数据正常的方面可以给一条“保持”类建议，但不要凑数。
+3. 按影响从高到低排序，最多 4 条；数据正常的方面不要凑数。
+4. summary 不超过 80 字；cautions 最多 2 条，只写数据局限（手表估算、覆盖天数少等）和需要就医的情形。`
+
+const COMBINED_ADVICE_PROMPT = `你是健康生活方式教练，把体检报告和 Garmin 手表记录（如有）联系起来，给出个性化、可执行的生活方式建议。资料中 garmin 为 null 时只根据体检报告。
+${SYSTEM_RULES}
+要求：
+1. 每条建议的依据（why）只写一句话，引用具体数值和来源，例如“体检 2026-08 甘油三酯 2.1 mmol/L”“近 30 天每周约 78 强度分钟”。优先寻找跨数据源的关联（如体检指标与运动量、睡眠与血压、身体年龄因子与训练结构）。
+2. actions 必须具体、可衡量（频率、时长、强度或数量），避免“注意休息”“均衡饮食”这类空话。
+3. 按影响从高到低排序，最多 4 条；数据正常的方面不要凑数。
 4. 体检中的结节、心电图等需要医生判断的发现，只提醒按医嘱随访，不做解读。
-5. cautions 写数据局限（手表估算、覆盖天数少等）和需要就医的情形。`
+5. summary 不超过 100 字；cautions 最多 2 条，只写数据局限和需要就医的情形。`
+
+const ADVICE: Record<AdviceScope, { system: string; task: string }> = {
+  daily: { system: DAILY_ADVICE_PROMPT, task: '结合睡眠、运动、恢复和身体年龄给出个性化建议' },
+  combined: { system: COMBINED_ADVICE_PROMPT, task: '结合体检报告和 Garmin 记录给出个性化建议' },
+}
 
 /** Rounds of Garmin lookups one chat answer may make before it must reply. */
 const MAX_TOOL_STEPS = 6
@@ -408,9 +428,11 @@ export class AiService {
     }
   }
 
+  /** Saved report analyses, newest first; `stale` once a report was added or changed since. */
   list(profileId: string): Array<Record<string, unknown>> {
-    return this.db.rows<Record<string, unknown>>(`SELECT id,profile_id,dimension,year_from,year_to,question,model,summary,content_json,evidence_json,data_fingerprint,created_at FROM ai_insights WHERE profile_id=:profile AND dimension!='daily' ORDER BY created_at DESC LIMIT 20`, { profile: profileId })
-      .map(({ content_json, evidence_json, ...row }) => ({ ...row, content: JSON.parse(String(content_json)), evidence: JSON.parse(String(evidence_json)) }))
+    const current = this.fingerprint(profileId)
+    return this.db.rows<Record<string, unknown>>(`SELECT id,profile_id,dimension,year_from,year_to,question,model,summary,content_json,evidence_json,data_fingerprint,created_at FROM ai_insights WHERE profile_id=:profile AND dimension NOT IN ('daily','combined') ORDER BY created_at DESC LIMIT 20`, { profile: profileId })
+      .map(({ content_json, evidence_json, ...row }) => ({ ...row, content: JSON.parse(String(content_json)), evidence: JSON.parse(String(evidence_json)), stale: row.data_fingerprint !== current }))
   }
 
   async generate(request: InsightRequest): Promise<Record<string, unknown>> {
@@ -443,24 +465,38 @@ export class AiService {
     return { ...record, content, evidence: usedEvidence, stale: false, content_json: undefined, evidence_json: undefined }
   }
 
-  /** The last saved daily advice for a profile, or null. */
-  latestAdvice(profileId: string): Record<string, unknown> | null {
+  /** The last saved advice of this scope for a profile, or null. */
+  latestAdvice(profileId: string, scope: AdviceScope = 'daily'): Record<string, unknown> | null {
     const row = this.db.one<Record<string, unknown>>(`SELECT id,model,summary,content_json,evidence_json,created_at FROM ai_insights
-      WHERE profile_id=:profile AND dimension='daily' ORDER BY created_at DESC LIMIT 1`, { profile: profileId })
+      WHERE profile_id=:profile AND dimension=:scope ORDER BY created_at DESC LIMIT 1`, { profile: profileId, scope })
     if (!row) return null
-    return { id: row.id, model: row.model, created_at: row.created_at, content: JSON.parse(String(row.content_json)), range: JSON.parse(String(row.evidence_json)).range ?? null }
+    const saved = JSON.parse(String(row.evidence_json)) as { range?: unknown; scope?: AdviceScope }
+    // Daily advice saved before the daily page went Garmin-only also drew on the reports.
+    if (saved.scope !== scope) return null
+    return { id: row.id, model: row.model, created_at: row.created_at, content: JSON.parse(String(row.content_json)), range: saved.range ?? null }
   }
 
-  /** Personalized advice from the daily-insights context; keeps only the newest per profile. */
-  async advise(profileId: string, context: Record<string, unknown>): Promise<Record<string, unknown>> {
+  /**
+   * Advice for the AI 洞察 page from the reports and, when synced, Garmin. Report
+   * rows are trimmed to the 80 most pressing (abnormal first, newest year first).
+   */
+  adviseCombined(profileId: string, garmin: Record<string, unknown> | null): Promise<Record<string, unknown>> {
+    const reports = this.evidence({ profile_id: profileId, dimension: 'comprehensive', year_from: null, year_to: null, question: null, conversation: [] })
+      .slice(0, 80).map(({ id: _id, report_id: _report, page: _page, ...row }) => row)
+    if (!reports.length && !garmin) throw new Error('还没有可分析的体检报告或 Garmin 数据')
+    return this.advise(profileId, { reports, garmin, range: garmin?.range ?? null }, 'combined')
+  }
+
+  /** Personalized advice for one scope; keeps only the newest per profile and scope. */
+  async advise(profileId: string, context: Record<string, unknown>, scope: AdviceScope = 'daily'): Promise<Record<string, unknown>> {
     const settings = this.requireSettings()
     if (!this.runner.advise) throw new Error('当前模型适配器不支持生成建议')
-    const content = await this.runner.advise(settings, this.apiKey(settings), JSON.stringify({ task: '结合体检、睡眠、运动、恢复和身体年龄给出个性化建议', data: context }))
-    const record = { id: randomUUID(), owner_id: 'local-owner', profile_id: profileId, dimension: 'daily', year_from: null, year_to: null, question: null,
+    const content = await this.runner.advise(settings, this.apiKey(settings), JSON.stringify({ task: ADVICE[scope].task, data: context }), ADVICE[scope].system)
+    const record = { id: randomUUID(), owner_id: 'local-owner', profile_id: profileId, dimension: scope, year_from: null, year_to: null, question: null,
       model: `${settings.name} / ${settings.model}`, summary: content.summary, content_json: JSON.stringify(content),
-      evidence_json: JSON.stringify({ range: context.range ?? null }), data_fingerprint: this.fingerprint(profileId), created_at: new Date().toISOString() }
+      evidence_json: JSON.stringify({ range: context.range ?? null, scope }), data_fingerprint: this.fingerprint(profileId), created_at: new Date().toISOString() }
     this.db.transaction(() => {
-      this.db.run(`DELETE FROM ai_insights WHERE profile_id=:profile AND dimension='daily'`, { profile: profileId })
+      this.db.run(`DELETE FROM ai_insights WHERE profile_id=:profile AND dimension=:scope`, { profile: profileId, scope })
       this.db.run(`INSERT INTO ai_insights (id,owner_id,profile_id,dimension,year_from,year_to,question,model,summary,content_json,evidence_json,data_fingerprint,created_at)
         VALUES (:id,:owner_id,:profile_id,:dimension,:year_from,:year_to,:question,:model,:summary,:content_json,:evidence_json,:data_fingerprint,:created_at)`, record)
     })

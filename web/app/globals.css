@@ -152,7 +152,7 @@
   min-width: 0; border: 1px solid var(--line); border-radius: var(--radius);
   background: var(--surface); box-shadow: var(--shadow-soft);
 }
-.gd-kpi { position: relative; min-height: 120px; padding: 15px 16px; display: flex; align-items: flex-start; gap: 14px; }
+.gd-kpi { min-height: 120px; padding: 15px 16px; display: flex; align-items: flex-start; gap: 14px; }
 .gd-icon { width: 46px; height: 46px; flex: 0 0 46px; border-radius: 13px; display: grid; place-items: center; }
 .gd-icon svg { width: 23px; height: 23px; }
 /* One ink tone for every metric icon; colour is reserved for data and status. */
@@ -162,8 +162,11 @@
 .gd-kpi strong { display: block; color: var(--text); font-size: 32px; line-height: 1; letter-spacing: -.04em; font-weight: 720; }
 .gd-kpi strong small { margin-left: 5px; font-size: 12px; letter-spacing: 0; font-weight: 500; }
 .gd-kpi p { margin: 7px 0 0; color: var(--gd-muted); font-size: 11px; }
-.gd-comparison { position: absolute; right: 15px; bottom: 15px; color: var(--normal); font-size: 12px; white-space: nowrap; }
-.gd-comparison small { display: block; margin-top: 4px; color: var(--gd-muted); font-size: 10px; }
+/* The week-on-week change sits beside the value, in the flow, so a wrapping note never runs under it. */
+.gd-kpi-value { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; }
+.gd-comparison { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 0 4px; min-width: 0; color: var(--normal); font-size: 12px; white-space: nowrap; }
+.gd-comparison.down { color: var(--attention); }
+.gd-comparison small { color: var(--gd-muted); font-size: 10px; }
 .gd-layout { display: grid; grid-template-columns: minmax(0,2.05fr) minmax(265px,.95fr); align-items: start; gap: 13px; margin-bottom: 13px; }
 .gd-primary { display: grid; gap: 13px; min-width: 0; }
 .gd-top-grid { display: grid; grid-template-columns: minmax(0,.95fr) minmax(0,1.2fr); gap: 13px; }
@@ -4080,9 +4083,6 @@ dialog.dialog-floating {
 .gd-insight.level-important { border-left: 3px solid var(--abnormal); }
 .gd-insight.level-attention { border-left: 3px solid var(--attention); }
 .gd-insight p + p { margin-top: 6px; }
-.gd-insight .gd-insight-advice { color: var(--text-soft); }
-.gd-insight .gd-insight-advice::before { content: "建议 · "; color: var(--accent); font-weight: 600; }
-.gd-insight-sources { display: block; margin-top: 6px; color: var(--faint); font-size: 10px; }
 .gd-insight-empty { margin: 0; color: var(--muted); font-size: 11px; }
 .gd-bodyage { padding: 13px 12px; border: 1px solid var(--line); border-radius: 11px; background: var(--surface-subtle); display: grid; gap: 10px; }
 .gd-bodyage.empty { display: grid; grid-template-columns: 43px minmax(0,1fr); gap: 10px; background: var(--surface); }
@@ -4104,9 +4104,6 @@ dialog.dialog-floating {
 .gd-bodyage-factors li.ok svg { color: var(--normal); }
 .gd-bodyage-factors li.off svg { color: var(--attention); }
 .gd-bodyage-factors li small { grid-column: 2 / -1; color: var(--faint); font-size: 10px; }
-.gd-bodyage-advice { border-top: 1px dashed var(--line-strong); padding-top: 8px; }
-.gd-bodyage-advice h4 { margin: 0 0 4px; font-size: 11px; color: var(--accent); }
-.gd-bodyage-advice p { margin: 0 0 4px; color: var(--text-soft); font-size: 10.5px; line-height: 1.65; }
 .gd-advice { padding: 12px 11px; border: 1px solid var(--line); border-radius: 11px; display: grid; gap: 8px; }
 .gd-advice-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .gd-advice-head h3 { margin: 0; display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-soft); }
@@ -4129,3 +4126,32 @@ dialog.dialog-floating {
 .gd-advice-cautions { padding: 7px 9px; border-radius: 8px; background: var(--surface-sunken); }
 .gd-advice-cautions p { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.6; }
 .gd-advice-meta { color: var(--faint); font-size: 10px; }
+.gd-advice-list details { margin-top: 3px; }
+.gd-advice-list details summary { cursor: pointer; color: var(--faint); font-size: 10px; }
+.gd-advice-list details p { margin: 3px 0 0; }
+/* Rule advice, shown on the daily page until an AI advice replaces it. */
+.gd-advice-rules { margin: 0; padding-left: 16px; display: grid; gap: 4px; color: var(--text-soft); font-size: 10.5px; line-height: 1.65; }
+.gd-advice-rules b { color: var(--text); font-weight: 620; }
+.gd-advice-head h3 small { margin-left: 4px; color: var(--faint); font-size: 10px; font-weight: 500; }
+/* AI 洞察 page: the joined advice above the chat input. */
+.combined-advice { margin-top: 12px; background: var(--surface); }
+.combined-advice-actions { display: flex; gap: 6px; }
+/* Overview page: the AI read of the checkup reports. */
+.report-insights { display: grid; gap: 10px; margin-bottom: 22px; padding: 18px 20px; }
+.report-insights-head { display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; gap: 12px; }
+.report-insights-head h2 { margin: 2px 0 0; color: var(--text); font-size: 16px; }
+.report-insights-grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(260px,1fr)); gap: 10px; }
+.report-insights-grid .gd-insight { grid-template-columns: minmax(0,1fr); }
+.gd-insight.level-observation h3 em { color: var(--muted); background: var(--surface-sunken); }
+.report-insight-sources { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+.report-insight-sources a { padding: 2px 7px; border-radius: 6px; background: var(--surface-subtle); color: var(--muted); font-size: 10px; text-decoration: none; }
+.report-insight-sources a:hover { color: var(--accent); }
+.report-insights-stale { margin: 0; padding: 7px 10px; border-radius: 8px; background: var(--attention-soft); color: var(--attention); font-size: 11px; }
+.report-insights-more summary { cursor: pointer; color: var(--muted); font-size: 11px; }
+.report-insights-more ul { margin: 6px 0 0; padding-left: 18px; color: var(--text-soft); font-size: 11px; line-height: 1.65; }
+.report-insights-more p { margin: 4px 0 0; color: var(--muted); font-size: 10.5px; line-height: 1.6; }
+@media (max-width: 680px) {
+  .report-insights { padding: 14px; }
+  .report-insights-head { grid-template-columns: auto minmax(0,1fr); }
+  .report-insights-head .button { grid-column: 1 / -1; }
+}

@@ -163,7 +163,7 @@ function Heatmap({from,to,today,label,activities,selectedDate,onSelect}:{from:st
   </section>;
 }
 
-function Kpi({icon,label,value,unit,note,comparison,tone}:{icon:ReactNode;label:string;value:string;unit:string;note:string;comparison?:string;tone:string}) {return <article className="gd-card gd-kpi"><span className={`gd-icon ${tone}`}>{icon}</span><div><h2>{label}</h2><strong>{value}<small>{unit}</small></strong><p>{note}</p></div>{comparison && <span className="gd-comparison">{comparison}<small>较前 7 天</small></span>}</article>;}
+function Kpi({icon,label,value,unit,note,comparison,tone}:{icon:ReactNode;label:string;value:string;unit:string;note:string;comparison?:string;tone:string}) {return <article className="gd-card gd-kpi"><span className={`gd-icon ${tone}`}>{icon}</span><div><h2>{label}</h2><div className="gd-kpi-value"><strong>{value}<small>{unit}</small></strong>{comparison && <span className={`gd-comparison${comparison.startsWith('↓') ? ' down' : ''}`}>{comparison}<small>较前 7 天</small></span>}</div><p>{note}</p></div></article>;}
 function Trend({title,icon,field,data,from,to,label,unit,color}:{title:string;icon:ReactNode;field:'sleep_score'|'hrv_last_night';data:GarminDailyPoint[];from:string;to:string;label:string;unit:string;color:string}) {
   const value = (row: GarminDailyPoint) => field==='hrv_last_night' ? row.hrv_last_night ?? row.hrv_weekly_avg : row[field];
   const points = useMemo(() => trendSeries(data, from, to, value), [data, from, to, field]); // eslint-disable-line react-hooks/exhaustive-deps

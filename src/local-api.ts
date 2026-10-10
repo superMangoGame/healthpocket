@@ -208,7 +208,7 @@ export class LocalApi {
     }
     // Reads and streaming AI calls answer immediately; Garmin has its own lane;
     // everything else mutates shared tables and waits its turn.
-    if (req.method === 'GET' || (req.method === 'POST' && ['/ai/chat', '/ai/models', '/ai/test', '/daily/advice'].includes(path))) await this.dispatch(req, res, path, query)
+    if (req.method === 'GET' || (req.method === 'POST' && ['/ai/chat', '/ai/models', '/ai/test', '/daily/advice', '/ai/advice'].includes(path))) await this.dispatch(req, res, path, query)
     else if (GARMIN_LANE.test(path)) await this.serializeGarmin(() => this.dispatch(req, res, path, query))
     else await this.serializeMutation(`${req.method ?? 'POST'} ${path}`, () => this.dispatch(req, res, path, query))
   }
@@ -318,6 +318,15 @@ export class LocalApi {
       const insights = this.dailyInsights(params)
       try { return json(res, 200, await this.ai.advise(this.profile(params.get('profile_id')), insights.context)) }
       catch (error) { throw new HttpError(502, error instanceof Error ? error.message : String(error)) }
+    }
+    // The AI 洞察 page's advice joins the reports with the last 30 days of Garmin, when synced.
+    if (path === '/ai/advice' && method === 'GET') return json(res, 200, this.ai.latestAdvice(this.profile(query.get('profile_id')), 'combined'))
+    if (path === '/ai/advice' && method === 'POST') {
+      const payload = await readJson(req)
+      const profile = this.profile(typeof payload.profile_id === 'string' ? payload.profile_id : null)
+      const garmin = buildDailyInsights(this.db, profile, recentDays(30)).context
+      try { return json(res, 200, await this.ai.adviseCombined(profile, garmin.days_with_data ? garmin : null)) }
+      catch (error) { throw new HttpError(502, describeModelError(error)) }
     }
     if (path === '/garmin/sync' && method === 'POST') {
       const payload = await readJson(req)
@@ -609,6 +618,13 @@ async function readJson(req: IncomingMessage, limit = 64 * 1024): Promise<Row> {
   const body = await readBody(req, limit)
   try { const parsed: unknown = JSON.parse(body.toString('utf8')); if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error(); return parsed as Row }
   catch { throw new HttpError(400, 'JSON 格式无效') }
+}
+
+/** The last `days` calendar days, ending today in local time. */
+function recentDays(days: number): { from: string; to: string } {
+  const key = (value: Date) => `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`
+  const start = new Date(); start.setDate(start.getDate() - days + 1)
+  return { from: key(start), to: key(new Date()) }
 }
 
 function nullableYear(value: unknown): number | null {

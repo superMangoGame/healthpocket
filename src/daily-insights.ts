@@ -1,15 +1,15 @@
 import type { LocalDatabase } from './database.ts'
 
 /**
- * Rule-based insights for the daily health page. They join three sources the
- * dashboard otherwise shows apart - the latest checkup report, Garmin sleep and
- * recovery, and training - and turn each pattern into one concrete suggestion.
- * Thresholds follow common public guidance (WHO activity, adult sleep duration,
- * Chinese BMI bands); they describe lifestyle, never diagnose.
+ * Rule-based insights for the daily health page, built from Garmin data alone:
+ * sleep, training, recovery and body age. Checkup reports are analysed on the
+ * overview page; keeping the sources apart stops the two pages from advising
+ * differently on the same number. Thresholds follow common public guidance (WHO
+ * activity, adult sleep duration); they describe lifestyle, never diagnose.
  */
 
 export type InsightLevel = 'good' | 'attention' | 'important'
-export type InsightCategory = 'body_age' | 'sleep' | 'activity' | 'recovery' | 'report'
+export type InsightCategory = 'body_age' | 'sleep' | 'activity' | 'recovery'
 
 export interface DailyInsight {
   id: string
@@ -56,11 +56,6 @@ type DailyRow = {
   sleep_score: number | null; hrv_last_night: number | null
 }
 type ActivityRow = { date: string; type: string; duration_seconds: number; training_effect: number | null }
-type MeasurementRow = {
-  canonical_id: string; raw_name: string; value_numeric: number | null; value_text: string | null; unit: string | null
-  ref_low: number | null; ref_high: number | null; flag: string | null; status: string
-}
-type ReportRow = { id: string; exam_date: string | null; year: number | null }
 
 const DAILY_SQL = `SELECT date,steps,resting_hr,average_stress,body_battery_high,intensity_minutes,sleep_seconds,deep_sleep_seconds,rem_sleep_seconds,sleep_score,hrv_last_night
   FROM garmin_daily WHERE profile_id=:profile AND date BETWEEN :from AND :to ORDER BY date`
@@ -120,34 +115,11 @@ function latestFitnessAge(db: LocalDatabase, profile: string, to: string): Fitne
   try { return fitnessAgeFromRaw(row.date, (JSON.parse(row.raw_json) as Record<string, unknown>).fitness_age) } catch { return null }
 }
 
-function direction(row: MeasurementRow): 'high' | 'low' | null {
-  const flag = (row.flag ?? '').toUpperCase()
-  if (flag.includes('H') || flag.includes('↑')) return 'high'
-  if (flag.includes('L') || flag.includes('↓')) return 'low'
-  if (row.value_numeric === null) return null
-  if (row.ref_high !== null && row.value_numeric > row.ref_high) return 'high'
-  if (row.ref_low !== null && row.value_numeric < row.ref_low) return 'low'
-  return null
-}
-
-function measurementText(row: MeasurementRow): string {
-  const value = row.value_numeric !== null ? `${row.value_numeric}${row.unit ? ` ${row.unit}` : ''}` : row.value_text ?? ''
-  const ref = row.ref_low !== null && row.ref_high !== null ? `（参考 ${row.ref_low}–${row.ref_high}）`
-    : row.ref_high !== null ? `（参考 ≤ ${row.ref_high}）` : row.ref_low !== null ? `（参考 ≥ ${row.ref_low}）` : ''
-  return `${row.raw_name} ${value}${ref}`.trim()
-}
-
 export function buildDailyInsights(db: LocalDatabase, profile: string, range: { from: string; to: string }): DailyInsights {
   const { from, to } = range
   const days = db.rows<DailyRow>(DAILY_SQL, { profile, from, to })
   const baseline = db.rows<DailyRow>(DAILY_SQL, { profile, from: shiftDay(from, -BASELINE_DAYS), to: shiftDay(from, -1) })
   const activities = db.rows<ActivityRow>('SELECT date,type,duration_seconds,training_effect FROM garmin_activities WHERE profile_id=:profile AND date BETWEEN :from AND :to', { profile, from, to })
-  const report = db.one<ReportRow>(`SELECT id,exam_date,year FROM reports WHERE profile_id=:profile AND parse_status='completed'
-    ORDER BY COALESCE(exam_date, year || '-12-31') DESC LIMIT 1`, { profile })
-  const abnormal = report ? db.rows<MeasurementRow>(`SELECT canonical_id,raw_name,value_numeric,value_text,unit,ref_low,ref_high,flag,status FROM measurements
-    WHERE report_id=:report AND status IN ('abnormal','attention')`, { report: report.id }) : []
-  const reportFindings = report ? db.rows<{ title: string }>(`SELECT DISTINCT title FROM findings WHERE report_id=:report AND severity='abnormal' LIMIT 12`, { report: report.id }) : []
-  const reportLabel = report ? `体检 ${report.exam_date ?? report.year ?? ''}`.trim() : '体检'
   const fitness = latestFitnessAge(db, profile, to)
 
   const span = Math.max(1, daysBetween(from, to))
@@ -168,7 +140,6 @@ export function buildDailyInsights(db: LocalDatabase, profile: string, range: { 
 
   const insights: DailyInsight[] = []
   const add = (insight: DailyInsight) => insights.push(insight)
-  const find = (...ids: string[]) => abnormal.filter((row) => ids.includes(row.canonical_id))
 
   // --- Body age ---------------------------------------------------------
   if (fitness) {
@@ -231,84 +202,6 @@ export function buildDailyInsights(db: LocalDatabase, profile: string, range: { 
       sources: ['压力'] })
   }
 
-  // --- Checkup report × lifestyle --------------------------------------
-  const intensityText = weeklyIntensity !== null ? `近期每周约 ${round(weeklyIntensity)} 强度分钟` : '近期运动数据不足'
-  const lipids = find('total_cholesterol', 'ldl', 'triglyceride').filter((row) => direction(row) === 'high')
-  const lowHdl = find('hdl').filter((row) => direction(row) === 'low')
-  if (lipids.length || lowHdl.length) {
-    add({ id: 'report-lipids', category: 'report', level: 'important', title: '血脂异常 × 运动',
-      finding: `${reportLabel}：${[...lipids, ...lowHdl].map(measurementText).join('；')}。${intensityText}。`,
-      advice: `规律有氧（每周 150–300 分钟）配合力量训练能降低甘油三酯、提升高密度脂蛋白；饮食上减少肥肉、油炸和动物内脏，增加燕麦、豆类和深海鱼。${weeklyIntensity !== null && weeklyIntensity >= 150 ? '运动量已足够，重点放在饮食调整。' : ''}建议 3–6 个月后复查血脂。`,
-      sources: [reportLabel, '运动'] })
-  }
-  const glucose = find('glucose').filter((row) => direction(row) === 'high')
-  if (glucose.length) {
-    add({ id: 'report-glucose', category: 'report', level: 'important', title: '血糖偏高 × 日常活动',
-      finding: `${reportLabel}：${glucose.map(measurementText).join('；')}。${steps !== null ? `日均 ${round(steps)} 步。` : ''}`,
-      advice: '餐后 10–15 分钟快走 15 分钟能明显降低餐后血糖；减少含糖饮料和精米白面，并保证 7 小时以上睡眠（睡眠不足会升高血糖）。请遵医嘱复查空腹血糖和糖化血红蛋白。',
-      sources: [reportLabel, '步数', '睡眠'] })
-  }
-  const uric = find('uric_acid').filter((row) => direction(row) === 'high')
-  if (uric.length) {
-    add({ id: 'report-uric', category: 'report', level: 'attention', title: '尿酸偏高 × 训练补水',
-      finding: `${reportLabel}：${uric.map(measurementText).join('；')}。${intensityText}。`,
-      advice: '每天饮水 2 L 以上，长时间或高强度训练前后额外补水；少喝啤酒、含果糖饮料，控制海鲜和浓肉汤。',
-      sources: [reportLabel, '运动'] })
-  }
-  const liver = find('alt', 'ast', 'ggt').filter((row) => direction(row) === 'high')
-  if (liver.length) {
-    add({ id: 'report-liver', category: 'report', level: 'attention', title: '肝功能指标偏高',
-      finding: `${reportLabel}：${liver.map(measurementText).join('；')}。`,
-      advice: '戒酒或严格限酒，控制体重与精制碳水；剧烈运动后 48 小时内 AST 也可能短暂升高，复查前 2 天避免高强度训练。',
-      sources: [reportLabel] })
-  }
-  const bpHigh = find('systolic_bp', 'diastolic_bp').filter((row) => direction(row) === 'high')
-  const bpLow = find('systolic_bp', 'diastolic_bp').filter((row) => direction(row) === 'low')
-  if (bpHigh.length) {
-    add({ id: 'report-bp-high', category: 'report', level: 'important', title: '血压偏高 × 睡眠与压力',
-      finding: `${reportLabel}：${bpHigh.map(measurementText).join('；')}。${sleepAvg !== null ? `平均睡眠 ${hours(sleepAvg)}` : ''}${stress !== null ? `，平均压力 ${round(stress)}` : ''}。`,
-      advice: '每天盐摄入控制在 5 g 以内，规律有氧运动、保证睡眠并管理压力都能降低血压；建议在家定时测量并记录。',
-      sources: [reportLabel, '睡眠', '压力'] })
-  } else if (bpLow.length) {
-    add({ id: 'report-bp-low', category: 'report', level: 'attention', title: '血压偏低 × 训练',
-      finding: `${reportLabel}：${bpLow.map(measurementText).join('；')}。${rhr !== null ? `静息心率 ${round(rhr)} 次/分` : ''}${weeklyIntensity !== null ? `，${intensityText}` : ''}。`,
-      advice: '经常运动的人血压和心率偏低较常见。训练后注意补水和电解质，从坐卧位起身放慢速度；如出现头晕、黑朦或乏力，请就医评估。',
-      sources: [reportLabel, '心率', '运动'] })
-  }
-  const bilirubin = find('total_bilirubin', 'direct_bilirubin').filter((row) => direction(row) === 'high')
-  if (bilirubin.length && !liver.length) {
-    add({ id: 'report-bilirubin', category: 'report', level: 'attention', title: '胆红素偏高 × 训练与空腹',
-      finding: `${reportLabel}：${bilirubin.map(measurementText).join('；')}。${intensityText}。`,
-      advice: '单纯胆红素轻度升高常与空腹时间过长、剧烈运动、熬夜或体质（如 Gilbert 综合征）有关。复查前 2–3 天避免高强度训练、保证睡眠、不要长时间空腹；若伴随皮肤或眼白发黄、乏力，请尽快就医。',
-      sources: [reportLabel, '运动', '睡眠'] })
-  }
-  const anemia = find('hemoglobin', 'rbc').filter((row) => direction(row) === 'low')
-  if (anemia.length) {
-    add({ id: 'report-hemoglobin', category: 'report', level: 'attention', title: '血红蛋白偏低 × 耐力',
-      finding: `${reportLabel}：${anemia.map(measurementText).join('；')}。`,
-      advice: '血红蛋白偏低会降低耐力表现、让心率更容易升高。多吃红肉、动物肝脏和深绿色蔬菜，搭配维生素 C；建议咨询医生是否需要查铁蛋白。',
-      sources: [reportLabel] })
-  }
-  const bmi = find('bmi').filter((row) => direction(row) === 'high')
-  if (bmi.length && !fitness?.components.some((item) => item.key === 'bmi')) {
-    add({ id: 'report-bmi', category: 'report', level: 'attention', title: '体重指数偏高',
-      finding: `${reportLabel}：${bmi.map(measurementText).join('；')}。${intensityText}。`,
-      advice: '每天约 300–500 kcal 的热量缺口加每周 2–3 次力量训练，比单纯节食更能保住肌肉。',
-      sources: [reportLabel, '运动'] })
-  }
-
-  // Conclusions repeat across report sections, sometimes cut off ("…(TI"): drop the
-  // section prefix and any copy contained in a longer one.
-  const conclusions = reportFindings.map((row) => row.title).filter((title) => !/偏高|偏低|增高|减低|升高|降低|测定/.test(title))
-    .map((title) => title.replace(/^[^:：]{1,12}[:：]/, '').replace(/\([^)]*$/, '').trim()).filter(Boolean)
-  const followUps = [...new Set(conclusions)].filter((title, _, all) => !all.some((other) => other !== title && other.includes(title)))
-  if (followUps.length) {
-    add({ id: 'report-follow-up', category: 'report', level: 'attention', title: '体检随访提醒',
-      finding: `${reportLabel}有 ${followUps.length} 项影像或检查结论需要关注：${followUps.slice(0, 4).join('；')}${followUps.length > 4 ? ' 等' : ''}。`,
-      advice: '这类发现需要医生结合影像判断，请按报告或医生建议的时间复查，并把这次报告带上做对比。',
-      sources: [reportLabel] })
-  }
-
   const order: Record<InsightLevel, number> = { important: 0, attention: 1, good: 2 }
   insights.sort((a, b) => (a.category === 'body_age' ? -1 : 0) - (b.category === 'body_age' ? -1 : 0) || order[a.level] - order[b.level])
 
@@ -321,7 +214,6 @@ export function buildDailyInsights(db: LocalDatabase, profile: string, range: { 
         by_type: Object.entries(activities.reduce<Record<string, number>>((acc, item) => { acc[item.type] = (acc[item.type] ?? 0) + 1; return acc }, {})).map(([type, count]) => ({ type, count })) },
       recovery: { resting_hr: rhr === null ? null : round(rhr), resting_hr_baseline: rhrBase === null ? null : round(rhrBase), hrv_ms: hrv === null ? null : round(hrv), hrv_baseline_ms: hrvBase === null ? null : round(hrvBase), avg_stress: stress === null ? null : round(stress), body_battery_high: battery === null ? null : round(battery) },
       fitness_age: fitness,
-      latest_report: report ? { date: report.exam_date ?? report.year, findings: reportFindings.map((row) => row.title), abnormal: abnormal.map((row) => ({ item: row.raw_name, value: row.value_numeric ?? row.value_text, unit: row.unit, ref_low: row.ref_low, ref_high: row.ref_high, direction: direction(row), status: row.status })) } : null,
     },
   }
 }

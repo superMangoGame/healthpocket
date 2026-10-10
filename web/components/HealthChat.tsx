@@ -10,7 +10,7 @@ import {
 import { MarkdownTextPrimitive } from "@assistant-ui/react-markdown";
 import { Brain, FileText, Gear, MagnifyingGlass, Paperclip, PaperPlaneRight, Sparkle, Stop, Watch, X } from "@phosphor-icons/react";
 import Link from "next/link";
-import { useEffect, useState, type ComponentPropsWithoutRef } from "react";
+import { useEffect, useState, type ComponentPropsWithoutRef, type ReactNode } from "react";
 import remarkGfm from "remark-gfm";
 import { apiFetch } from "@/lib/api";
 import type { AiSettings } from "@/lib/types";
@@ -19,8 +19,8 @@ type ChatVariant = "reports" | "daily";
 
 const COPY: Record<ChatVariant, { title: string; placeholder: (name: string) => string; suggestions: string[]; disabled: string }> = {
   reports: {
-    title: "问问你的体检数据",
-    placeholder: (name) => `询问关于 ${name} 的体检数据…`,
+    title: "问问你的健康数据",
+    placeholder: (name) => `询问关于 ${name} 的体检报告和日常健康数据…`,
     suggestions: ["近几年最值得关注的变化是什么？", "哪些异常持续出现？", "帮我准备下次就诊要问的问题"],
     disabled: "完成模型配置后，可在这里输入问题和数据文件。",
   },
@@ -68,7 +68,7 @@ function ComposerAttachment() {
   return <AttachmentPrimitive.Root className="chat-file-chip"><FileText /><AttachmentPrimitive.Name /><AttachmentPrimitive.Remove aria-label="移除附件"><X /></AttachmentPrimitive.Remove></AttachmentPrimitive.Root>;
 }
 
-function HealthChatRuntime({ profileName, reportCount, settings, variant }: { profileName: string; reportCount: number; settings: AiSettings; variant: ChatVariant }) {
+function HealthChatRuntime({ profileName, reportCount, settings, variant, beforeComposer }: { profileName: string; reportCount: number; settings: AiSettings; variant: ChatVariant; beforeComposer?: ReactNode }) {
   const copy = COPY[variant];
   const placeholder = variant === "daily" || reportCount ? copy.placeholder(profileName) : "输入数据或附加 CSV、JSON、Markdown、TXT 文件…";
   const suggestions = copy.suggestions;
@@ -81,6 +81,7 @@ function HealthChatRuntime({ profileName, reportCount, settings, variant }: { pr
           <ThreadPrimitive.Empty><div className="chat-suggestions">{suggestions.map((item) => <ThreadPrimitive.Suggestion key={item} prompt={item} send>{item}</ThreadPrimitive.Suggestion>)}</div></ThreadPrimitive.Empty>
           <ThreadPrimitive.If running><div className="chat-thinking"><Sparkle /> 正在核对数据并生成回答…</div></ThreadPrimitive.If>
         </ThreadPrimitive.Viewport>
+        {beforeComposer}
         <ComposerPrimitive.Root className="health-chat-composer">
           <div className="chat-composer-files"><ComposerPrimitive.Attachments components={{ Attachment: ComposerAttachment }} /></div>
           <ComposerPrimitive.Input rows={2} placeholder={placeholder} aria-label={copy.title} />
@@ -91,12 +92,13 @@ function HealthChatRuntime({ profileName, reportCount, settings, variant }: { pr
     </section>;
 }
 
-export function HealthChat({ profileId, profileName, reportCount = 0, variant = "reports" }: { profileId: string | null; profileName: string; reportCount?: number; variant?: ChatVariant }) {
+/** `beforeComposer` renders between the conversation and the input box. */
+export function HealthChat({ profileId, profileName, reportCount = 0, variant = "reports", beforeComposer }: { profileId: string | null; profileName: string; reportCount?: number; variant?: ChatVariant; beforeComposer?: ReactNode }) {
   const [settings, setSettings] = useState<AiSettings | null>(null);
   const [error, setError] = useState("");
   useEffect(() => { apiFetch<AiSettings>("/ai/settings").then(setSettings).catch((reason) => setError(reason.message)); }, [profileId]);
   if (error) return <section className="health-chat panel"><div className="health-chat-error">{error}</div></section>;
   if (!settings) return <section className="health-chat panel"><div className="chat-thinking"><Sparkle /> 正在读取模型配置…</div></section>;
   if (!settings.enabled || !profileId) return <section className="health-chat panel"><div className="health-chat-heading"><span className="health-chat-icon"><Brain weight="duotone" /></span><div><span className="eyebrow">AI 健康助手</span><h2>{COPY[variant].title}</h2></div><Link className="button" href="/settings"><Gear /> 配置模型</Link></div><div className="health-chat-disabled">{COPY[variant].disabled}</div></section>;
-  return <HealthChatRuntime profileName={profileName} reportCount={reportCount} settings={settings} variant={variant} />;
+  return <HealthChatRuntime profileName={profileName} reportCount={reportCount} settings={settings} variant={variant} beforeComposer={beforeComposer} />;
 }

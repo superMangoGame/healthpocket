@@ -256,7 +256,7 @@ export type DailyInsightLevel = "good" | "attention" | "important";
 
 export interface DailyInsight {
   id: string;
-  category: "body_age" | "sleep" | "activity" | "recovery" | "report";
+  category: "body_age" | "sleep" | "activity" | "recovery";
   level: DailyInsightLevel;
   title: string;
   finding: string;
@@ -480,4 +480,6 @@ export interface AiInsight {
     doctor_questions: string[];
   };
   evidence: InsightEvidence[];
+  /** A report was added or changed since this analysis. */
+  stale: boolean;
 }
