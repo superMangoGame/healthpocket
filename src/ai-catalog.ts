@@ -66,6 +66,8 @@ export interface ResolvedModel {
   model: LanguageModel
   adapter: AiAdapter
   supportsTools: boolean
+  /** What the model reads besides text (`image`, `pdf`…); null when the catalog cannot say (Ollama, custom, unlisted models). */
+  inputs: string[] | null
 }
 
 const REFRESH_MS = 12 * 60 * 60 * 1000
@@ -137,7 +139,7 @@ export class AiCatalog {
 
   async resolve(connection: AiConnection, apiKey: string): Promise<ResolvedModel> {
     if (connection.provider === OLLAMA || connection.provider === CUSTOM) {
-      return { model: compatible(connection.provider, connection.base_url, apiKey)(connection.model), adapter: 'openai-compatible', supportsTools: true }
+      return { model: compatible(connection.provider, connection.base_url, apiKey)(connection.model), adapter: 'openai-compatible', supportsTools: true, inputs: null }
     }
     const provider = (await this.current())[connection.provider]
     if (!provider || !usable(provider)) throw new Error('该模型供应商已不在 Models.dev 目录中，请重新选择')
@@ -149,17 +151,26 @@ export class AiCatalog {
     if (!adapter) throw new Error('该模型需要的接口暂不支持，请换一个模型')
     // Models the catalog does not list yet are assumed to call tools, as before.
     const supportsTools = entry ? entry.tool_call : true
+    const inputs = entry?.modalities?.input ? [...entry.modalities.input] : null
     const id = connection.model
-    if (adapter === 'deepseek') return { model: createDeepSeek({ apiKey, baseURL })(id), adapter, supportsTools }
+    const resolved = (model: LanguageModel): ResolvedModel => ({ model, adapter, supportsTools, inputs })
+    if (adapter === 'deepseek') return resolved(createDeepSeek({ apiKey, baseURL })(id))
     if (adapter === 'openai') {
       const openai = createOpenAI({ apiKey, baseURL })
-      return { model: entry?.provider?.shape === 'completions' ? openai.chat(id) : openai.responses(id), adapter, supportsTools }
+      return resolved(entry?.provider?.shape === 'completions' ? openai.chat(id) : openai.responses(id))
     }
     // Anthropic only answers a browser origin (Obsidian's renderer) when asked to.
-    if (adapter === 'anthropic') return { model: createAnthropic({ apiKey, baseURL, headers: { 'anthropic-dangerous-direct-browser-access': 'true' } })(id), adapter, supportsTools }
-    if (adapter === 'google') return { model: createGoogleGenerativeAI({ apiKey, baseURL })(id), adapter, supportsTools }
-    if (adapter === 'openrouter') return { model: createOpenRouter({ apiKey, baseURL })(id), adapter, supportsTools }
-    return { model: compatible(provider.id, baseURL ?? '', apiKey)(id), adapter, supportsTools }
+    if (adapter === 'anthropic') return resolved(createAnthropic({ apiKey, baseURL, headers: { 'anthropic-dangerous-direct-browser-access': 'true' } })(id))
+    if (adapter === 'google') return resolved(createGoogleGenerativeAI({ apiKey, baseURL })(id))
+    if (adapter === 'openrouter') return resolved(createOpenRouter({ apiKey, baseURL })(id))
+    return resolved(compatible(provider.id, baseURL ?? '', apiKey)(id))
+  }
+
+  /** The model's extra input kinds without building a client; null when unknown. */
+  async inputs(connection: AiConnection): Promise<string[] | null> {
+    if (connection.provider === OLLAMA || connection.provider === CUSTOM) return null
+    const input = (await this.current())[connection.provider]?.models[connection.model]?.modalities?.input
+    return input ? [...input] : null
   }
 }
 

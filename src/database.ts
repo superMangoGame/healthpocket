@@ -182,15 +182,50 @@ export class LocalDatabase {
       CREATE TABLE IF NOT EXISTS garmin_settings (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, email TEXT NOT NULL, region TEXT NOT NULL, profile_id TEXT NOT NULL, authenticated INTEGER NOT NULL DEFAULT 0, display_name TEXT, last_sync_at TEXT, last_sync_error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, FOREIGN KEY(profile_id) REFERENCES profiles(id));
       CREATE TABLE IF NOT EXISTS garmin_daily (profile_id TEXT NOT NULL, date TEXT NOT NULL, steps INTEGER, distance_m REAL, active_calories REAL, total_calories REAL, resting_hr REAL, min_hr REAL, max_hr REAL, average_stress REAL, max_stress REAL, body_battery REAL, body_battery_low REAL, body_battery_high REAL, spo2_avg REAL, spo2_low REAL, respiration_avg REAL, respiration_sleep REAL, intensity_minutes REAL, sleep_seconds REAL, deep_sleep_seconds REAL, light_sleep_seconds REAL, rem_sleep_seconds REAL, awake_sleep_seconds REAL, sleep_score REAL, hrv_last_night REAL, hrv_weekly_avg REAL, hrv_5min_high REAL, hrv_status TEXT, training_status TEXT, training_readiness REAL, vo2_max REAL, fitness_age REAL, raw_json TEXT NOT NULL, fetched_at TEXT NOT NULL, PRIMARY KEY(profile_id,date), FOREIGN KEY(profile_id) REFERENCES profiles(id) ON DELETE CASCADE);
       CREATE TABLE IF NOT EXISTS garmin_activities (profile_id TEXT NOT NULL, activity_id TEXT NOT NULL, date TEXT NOT NULL, type TEXT NOT NULL, name TEXT NOT NULL, duration_seconds REAL NOT NULL, distance_m REAL, calories REAL, average_hr REAL, max_hr REAL, elevation_gain REAL, training_effect REAL, anaerobic_training_effect REAL, raw_json TEXT NOT NULL, fetched_at TEXT NOT NULL, PRIMARY KEY(profile_id,activity_id), FOREIGN KEY(profile_id) REFERENCES profiles(id) ON DELETE CASCADE);
+      CREATE TABLE IF NOT EXISTS medical_records (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, profile_id TEXT NOT NULL, category TEXT NOT NULL, title TEXT, record_date TEXT NOT NULL, institution TEXT, department TEXT, notes TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, FOREIGN KEY(profile_id) REFERENCES profiles(id) ON DELETE CASCADE);
+      CREATE TABLE IF NOT EXISTS record_files (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, record_id TEXT NOT NULL, filename TEXT NOT NULL, sha256 TEXT NOT NULL UNIQUE, mime_type TEXT NOT NULL, size_bytes INTEGER NOT NULL, has_thumbnail INTEGER NOT NULL DEFAULT 0, position INTEGER NOT NULL, created_at TEXT NOT NULL, FOREIGN KEY(record_id) REFERENCES medical_records(id) ON DELETE CASCADE);
+      CREATE TABLE IF NOT EXISTS record_measurements (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, record_id TEXT NOT NULL, file_id TEXT NOT NULL, canonical_id TEXT NOT NULL, raw_name TEXT NOT NULL, abbreviation TEXT, value_numeric REAL, value_text TEXT, unit TEXT, ref_low REAL, ref_high REAL, ref_text TEXT, flag TEXT, status TEXT NOT NULL, category TEXT NOT NULL, organ TEXT, anatomy_id TEXT, confidence REAL NOT NULL, page INTEGER NOT NULL, bbox TEXT, raw_text TEXT NOT NULL, FOREIGN KEY(record_id) REFERENCES medical_records(id) ON DELETE CASCADE, FOREIGN KEY(file_id) REFERENCES record_files(id) ON DELETE CASCADE);
+      CREATE TABLE IF NOT EXISTS record_findings (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, record_id TEXT NOT NULL, file_id TEXT NOT NULL, title TEXT NOT NULL, content TEXT NOT NULL, category TEXT NOT NULL, organ TEXT, anatomy_id TEXT, section TEXT, source TEXT, severity TEXT NOT NULL, page INTEGER NOT NULL, confidence REAL NOT NULL, FOREIGN KEY(record_id) REFERENCES medical_records(id) ON DELETE CASCADE, FOREIGN KEY(file_id) REFERENCES record_files(id) ON DELETE CASCADE);
+      CREATE INDEX IF NOT EXISTS ix_medical_records_profile_date ON medical_records(profile_id,record_date); CREATE INDEX IF NOT EXISTS ix_record_files_record_id ON record_files(record_id);
+      CREATE INDEX IF NOT EXISTS ix_record_measurements_record_id ON record_measurements(record_id); CREATE INDEX IF NOT EXISTS ix_record_measurements_file_id ON record_measurements(file_id); CREATE INDEX IF NOT EXISTS ix_record_measurements_canonical_id ON record_measurements(canonical_id);
+      CREATE INDEX IF NOT EXISTS ix_record_findings_record_id ON record_findings(record_id); CREATE INDEX IF NOT EXISTS ix_record_findings_file_id ON record_findings(file_id);
       CREATE INDEX IF NOT EXISTS ix_reports_profile_id ON reports(profile_id); CREATE INDEX IF NOT EXISTS ix_reports_year ON reports(year); CREATE INDEX IF NOT EXISTS ix_measurements_report_id ON measurements(report_id); CREATE INDEX IF NOT EXISTS ix_measurements_canonical_id ON measurements(canonical_id); CREATE INDEX IF NOT EXISTS ix_findings_report_id ON findings(report_id); CREATE INDEX IF NOT EXISTS ix_parse_jobs_report_id ON parse_jobs(report_id);
       CREATE INDEX IF NOT EXISTS ix_ai_insights_profile_id ON ai_insights(profile_id); CREATE INDEX IF NOT EXISTS ix_ai_insights_created_at ON ai_insights(created_at);
       CREATE INDEX IF NOT EXISTS ix_garmin_daily_profile_date ON garmin_daily(profile_id,date); CREATE INDEX IF NOT EXISTS ix_garmin_activities_profile_date ON garmin_activities(profile_id,date);
     `)
     // 人体结构树字段：旧库补列，旧数据由启动时的自动重新解析填充。
-    const additions: Array<[string, string]> = [['measurements', 'anatomy_id'], ['findings', 'anatomy_id'], ['findings', 'section'], ['findings', 'source']]
-    for (const [table, column] of additions) {
-      if (!this.rows<{ name: string }>(`PRAGMA table_info(${table})`).some((item) => item.name === column)) this.run(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT`)
+    const additions: Array<[string, string]> = [['measurements', 'anatomy_id'], ['findings', 'anatomy_id'], ['findings', 'section'], ['findings', 'source'],
+      // 病历附件的识别状态与识别出的文字。
+      ['record_files', 'text'], ['record_files', 'parse_status'], ['record_files', 'parse_method'], ['record_files', 'parse_error'], ['record_files', 'parsed_at'],
+      ['record_files', 'parser_version'], ['record_files', 'has_readable INTEGER NOT NULL DEFAULT 0']]
+    for (const [table, definition] of additions) {
+      const [column] = definition.split(' ')
+      if (!this.rows<{ name: string }>(`PRAGMA table_info(${table})`).some((item) => item.name === column)) this.run(`ALTER TABLE ${table} ADD COLUMN ${definition.includes(' ') ? definition : `${definition} TEXT`}`)
     }
+    this.createViews()
+  }
+
+  /**
+   * One place to read every measurement and finding of a profile, whether it came
+   * from a parsed checkup or from a recognized medical record. `report_id` is the
+   * source document (a report or a record, see `origin`), so the aggregation code
+   * and the evidence it hands out keep one shape. Rebuilt on every start so a
+   * column added to either side is picked up.
+   */
+  private createViews(): void {
+    const measurement = 'm.id,m.canonical_id,m.raw_name,m.abbreviation,m.value_numeric,m.value_text,m.unit,m.ref_low,m.ref_high,m.ref_text,m.flag,m.status,m.category,m.organ,m.anatomy_id,m.confidence,m.page,m.bbox,m.raw_text'
+    const finding = 'f.id,f.title,f.content,f.category,f.organ,f.anatomy_id,f.section,f.source,f.severity,f.page,f.confidence'
+    const report = "'report' AS origin,NULL AS file_id,'exam' AS source_category,NULL AS source_title,r.profile_id,r.year,r.exam_date"
+    const record = "'record' AS origin,{alias}.file_id,c.category AS source_category,c.title AS source_title,c.profile_id,CAST(substr(c.record_date,1,4) AS INTEGER) AS year,c.record_date AS exam_date"
+    this.requireDb().run(`
+      DROP VIEW IF EXISTS health_measurements; DROP VIEW IF EXISTS health_findings;
+      CREATE VIEW health_measurements AS
+        SELECT ${measurement},m.report_id,${report} FROM measurements m JOIN reports r ON r.id=m.report_id
+        UNION ALL SELECT ${measurement},m.record_id AS report_id,${record.replace('{alias}', 'm')} FROM record_measurements m JOIN medical_records c ON c.id=m.record_id;
+      CREATE VIEW health_findings AS
+        SELECT ${finding},f.report_id,${report} FROM findings f JOIN reports r ON r.id=f.report_id
+        UNION ALL SELECT ${finding},f.record_id AS report_id,${record.replace('{alias}', 'f')} FROM record_findings f JOIN medical_records c ON c.id=f.record_id;
+    `)
   }
 
   private ensureSeedData(): void {

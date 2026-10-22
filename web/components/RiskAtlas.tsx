@@ -11,6 +11,7 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { StatusBadge } from "@/components/StatusBadge";
 import { apiFetch, withProfile } from "@/lib/api";
+import { evidenceHref, evidenceLink } from "@/lib/records";
 import type {
   DashboardData,
   HealthStatus,
@@ -105,7 +106,7 @@ export function RiskAtlas({
         <div>
           <h2 className="section-title">年度健康轨迹 · 风险图谱</h2>
           <p>
-            按系统汇总历年可信异常证据；数字为去重后的风险数量，点击可查看明细。
+            按系统汇总历年体检与就医记录中的可信异常证据；数字为去重后的风险数量，点击可查看明细。
           </p>
         </div>
         <div className="risk-atlas-legend" aria-label="风险图谱图例">
@@ -287,11 +288,8 @@ export function RiskAtlas({
                             <span className="muted mono">{item.reference}</span>
                           )}
                           <small>{item.status_reason}</small>
-                          <Link
-                            className="link"
-                            href={`/reports/detail?id=${item.report_id}`}
-                          >
-                            第 {item.page} 页
+                          <Link className="link" href={evidenceHref(item)}>
+                            {evidenceLink(item)}
                           </Link>
                         </div>
                       </div>
@@ -313,7 +311,7 @@ export function RiskAtlas({
         </aside>
       </div>
       <p className="risk-atlas-note">
-        数量来自体检报告中的异常指标与结论证据，仅用于健康管理，不构成医学诊断。
+        数量来自体检报告和已识别的病历、化验单中的异常指标与诊断，仅用于健康管理，不构成医学诊断。
       </p>
     </div>
   );

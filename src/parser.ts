@@ -71,7 +71,7 @@ const ROMAN_RE = /(?<![A-ZⅠⅡⅢⅣ])(IV|III|II|I|Ⅳ|Ⅲ|Ⅱ|Ⅰ)(?:度)?(?!
 export const NORMAL_FINDING_RE = /(?:未见|未触及|未扪及|未闻及|未发现|未查见|未检出|无)\s*(?:明显)?\s*异常/
 export const EXPLANATORY_FINDING_RE = /(?:大多数无任何症状|发生与.{0,60}有关|最常见的原因|出现类似.{0,30}沉淀|所遗留|可由.{0,30}引起|不能完全肯定患者|主要用于.{0,30}筛查|是一种.{0,40}细菌|异常[，,]\s*或有.{0,50}(?:高危因素|请在专科医生指导下))/
 
-function normalizeText(text: string): string {
+export function normalizeText(text: string): string {
   return text.replaceAll('μ', 'µ').replaceAll('～', '~').replaceAll('—', '-').replaceAll('–', '-')
     .replaceAll('（', '(').replaceAll('）', ')').replaceAll('：', ':')
 }
@@ -395,7 +395,7 @@ export async function inspectPdf(content: Uint8Array): Promise<number> {
   return withPdf(content, async (pdf) => pdf.numPages)
 }
 
-async function extractPdfPages(content: Uint8Array): Promise<PageData[]> {
+export async function extractPdfPages(content: Uint8Array): Promise<PageData[]> {
   return withPdf(content, async (pdf) => {
   const pages: PageData[] = []
   for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {

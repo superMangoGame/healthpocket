@@ -4,6 +4,7 @@ import { ArrowClockwise, Brain } from "@phosphor-icons/react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { apiFetch, withProfile } from "@/lib/api";
+import { evidenceHref } from "@/lib/records";
 import type { AiInsight } from "@/lib/types";
 
 const LEVEL_LABEL = { important: "重点", attention: "关注", observation: "观察" } as const;
@@ -43,15 +44,15 @@ export function ReportInsightsPanel({ profileId }: { profileId: string | null })
     <section className="panel report-insights">
       <div className="report-insights-head">
         <span className="health-chat-icon"><Brain weight="duotone" /></span>
-        <div><span className="eyebrow">AI 洞察 · 基于体检报告</span><h2>体检报告解读</h2></div>
+        <div><span className="eyebrow">AI 洞察 · 基于体检与就医记录</span><h2>健康档案解读</h2></div>
         <button className="button" disabled={running || loading} onClick={() => void generate()}><ArrowClockwise className={running ? "batch-spinner" : ""} />{running ? "分析中…" : insight ? "重新分析" : "生成 AI 洞察"}</button>
       </div>
       {error && <p className="gd-advice-error">{error}{/配置|API Key|模型/.test(error) && <> · <Link className="link" href="/settings">去设置</Link></>}</p>}
-      {running && <p className="gd-advice-hint">正在阅读所有已解析的体检报告，约需 20–60 秒…</p>}
+      {running && <p className="gd-advice-hint">正在阅读所有已解析的体检报告和就医记录，约需 20–60 秒…</p>}
       {loading ? <div className="skeleton" style={{ height: 120, borderRadius: 11 }} />
-        : !insight ? !running && <p className="gd-advice-hint">汇总所有已解析报告的指标与结论，每条都标注出处。睡眠和运动方面的建议在「日常健康」，两者结合的建议在「AI 洞察」。</p>
+        : !insight ? !running && <p className="gd-advice-hint">汇总体检报告和已识别的病历、化验单中的指标与诊断，每条都标注出处。睡眠和运动方面的建议在「日常健康」，两者结合的建议在「AI 洞察」。</p>
         : <>
-          {insight.stale && <p className="report-insights-stale">报告有新增或修改，这份解读可能已过时，可点击「重新分析」。</p>}
+          {insight.stale && <p className="report-insights-stale">报告或就医记录有新增或修改，这份解读可能已过时，可点击「重新分析」。</p>}
           <p className="gd-advice-summary">{insight.content.summary}</p>
           <div className="report-insights-grid">
             {insight.content.highlights.map((item, index) => (
@@ -61,7 +62,7 @@ export function ReportInsightsPanel({ profileId }: { profileId: string | null })
                   <p>{item.explanation}</p>
                   <div className="report-insight-sources">
                     {item.evidence_ids.map((id) => evidence.get(id)).filter((row) => row !== undefined).map((row) => (
-                      <Link key={row.id} href={`/reports/detail?id=${row.report_id}`} title={`第 ${row.page} 页${row.reference ? ` · 参考 ${row.reference}` : ""}`}>{row.exam_date ?? row.year} · {row.title}{row.value ? ` ${row.value}` : ""}</Link>
+                      <Link key={row.id} href={evidenceHref(row)} title={`${row.origin === "record" ? row.source ?? "就医记录" : `体检报告第 ${row.page} 页`}${row.reference ? ` · 参考 ${row.reference}` : ""}`}>{row.exam_date ?? row.year} · {row.title}{row.value ? ` ${row.value}` : ""}</Link>
                     ))}
                   </div>
                 </div>

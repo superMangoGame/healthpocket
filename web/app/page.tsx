@@ -8,13 +8,16 @@ import { StatusBadge } from "@/components/StatusBadge";
 import { ReportInsightsPanel } from "@/components/ReportInsightsPanel";
 import { RiskAtlas } from "@/components/RiskAtlas";
 import { UploadDialog } from "@/components/UploadDialog";
+import { YearArchive } from "@/components/YearArchive";
 import { apiFetch, withProfile } from "@/lib/api";
-import type { DashboardData, TrendSeries } from "@/lib/types";
+import { buildTimeline, type TimelineEntry } from "@/lib/records";
+import type { DashboardData, MedicalRecord, ReportSummary, TrendSeries } from "@/lib/types";
 import { useProfiles } from "@/components/ProfileProvider";
 
 export default function DashboardPage() {
   const { activeProfile, activeProfileId } = useProfiles();
   const [data, setData] = useState<DashboardData | null>(null);
+  const [entries, setEntries] = useState<TimelineEntry[]>([]);
   const [trend, setTrend] = useState<TrendSeries | null>(null);
   const [error, setError] = useState("");
   const requestVersion = useRef(0);
@@ -22,13 +25,17 @@ export default function DashboardPage() {
     if (!activeProfileId) return;
     const request = ++requestVersion.current;
     setData(null);
+    setEntries([]);
     setTrend(null);
     setError("");
     try {
-      const dashboard = await apiFetch<DashboardData>(
-        withProfile("/dashboard", activeProfileId),
-      );
+      const [dashboard, reports, records] = await Promise.all([
+        apiFetch<DashboardData>(withProfile("/dashboard", activeProfileId)),
+        apiFetch<ReportSummary[]>(withProfile("/reports", activeProfileId)),
+        apiFetch<MedicalRecord[]>(withProfile("/records", activeProfileId)),
+      ]);
       if (request !== requestVersion.current) return;
+      setEntries(buildTimeline(reports, records));
       setData(dashboard);
       const candidates = [
         "total_bilirubin",
@@ -65,7 +72,7 @@ export default function DashboardPage() {
           <h1 className="page-title">健康总览</h1>
           <p className="page-subtitle">
             正在查看 {activeProfile?.name || "当前档案"}{" "}
-            的体检变化，每一个状态都能追溯到原始报告。
+            的体检变化和历年就医记录，每一个状态都能追溯到原始报告。
           </p>
         </div>
         <div className="header-actions">
@@ -75,14 +82,19 @@ export default function DashboardPage() {
       {error && <div className="error">{error}。请先启动 FastAPI 服务。</div>}
       {!data ? (
         <div className="panel skeleton" style={{ height: 340 }} />
-      ) : data.report_count === 0 ? (
+      ) : data.report_count === 0 && entries.length === 0 ? (
         <div className="panel">
           <EmptyState
-            title="还没有体检报告"
-            description="导入第一份 PDF 后，系统会自动识别年份、指标、参考区间和报告结论。"
+            title="还没有报告"
+            description="导入体检 PDF 后，系统会自动识别年份、指标、参考区间和报告结论；门诊病历、CT 影像、化验单也可以按日期归档。"
             action={<UploadDialog onComplete={load} />}
           />
         </div>
+      ) : data.report_count === 0 ? (
+        <>
+          <div className="notice">导入体检报告后，这里还会显示年度风险图谱、关键指标趋势和 AI 洞察。</div>
+          <YearArchive entries={entries} />
+        </>
       ) : (
         <>
           <section className="panel dashboard-hero">
@@ -94,6 +106,7 @@ export default function DashboardPage() {
               />
             </div>
           </section>
+          <YearArchive entries={entries} />
           <ReportInsightsPanel profileId={activeProfileId} />
           <section className="dashboard-grid">
             <div>

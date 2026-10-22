@@ -4,7 +4,7 @@ import { ArrowClockwise, CaretDown, CaretUp, CheckCircle, ClipboardText, Downloa
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, apiFetch, apiUrl, isAbortError } from "@/lib/api";
 import { BASE_PATH } from "@/lib/base-path";
-import type { AiModelList, AiProvider, AiProviderInfo, AiSettings, GarminActive, GarminDashboard, GarminDiagnostics, GarminMfaPrompt, GarminSettings } from "@/lib/types";
+import type { AiCapabilities, AiModelList, AiProvider, AiProviderInfo, AiSettings, GarminActive, GarminDashboard, GarminDiagnostics, GarminMfaPrompt, GarminSettings } from "@/lib/types";
 import { useProfiles } from "@/components/ProfileProvider";
 import { UpdateSettingsRow } from "@/components/UpdateSettingsRow";
 
@@ -105,6 +105,17 @@ const formatStamp = (value: string | null): string => {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString("zh-CN", { hour12: false });
 };
+
+/** Whether the saved model can read the photos and scans of medical records. */
+function AiVisionNote({ updatedAt }: { updatedAt: string | null }) {
+  const [capabilities, setCapabilities] = useState<AiCapabilities | null>(null);
+  useEffect(() => { apiFetch<AiCapabilities>("/ai/capabilities").then(setCapabilities).catch(() => setCapabilities(null)); }, [updatedAt]);
+  if (!capabilities?.configured) return null;
+  const text = capabilities.images === true ? `${capabilities.model} 支持读取图片${capabilities.pdf ? "和 PDF 扫描件" : ""}，可以识别病历、化验单的照片。`
+    : capabilities.images === false ? `${capabilities.model} 不支持读取图片：病历、化验单的照片无法识别。需要时请换用支持图片的模型，如通义千问 VL、GPT-4o、Claude、Gemini。`
+    : `模型目录中没有 ${capabilities.model} 的能力信息，识别病历照片时会直接尝试。`;
+  return <div className="ai-form-note">{text}</div>;
+}
 
 export default function SettingsPage() {
   const { activeProfileId } = useProfiles();
@@ -776,7 +787,8 @@ export default function SettingsPage() {
         </div>
         {provider && !provider.featured && <div className="ai-form-note">该供应商来自 Models.dev 目录，尚未在 Obsidian 中实测。如果连接失败，可能是它不允许从 Obsidian 直接访问，可以改用常用列表里的供应商或 OpenRouter。</div>}
         {modelWarning && <div className="ai-form-note">{modelWarning}</div>}
-        <div className="ai-form-note">获取列表和测试连接不会发送健康数据。开始对话后，才会发送当前档案的去身份化结构化数据和你主动附加的数据文件。</div>
+        <AiVisionNote updatedAt={ai.updated_at} />
+        <div className="ai-form-note">获取列表和测试连接不会发送健康数据。开始对话后，才会发送当前档案的去身份化结构化数据和你主动附加的数据文件。用 AI 识别病历、化验单的图片或扫描件时，会发送该文件的原图。</div>
         <div className="ai-form-actions">{ai.has_api_key && <button className="button button-danger" onClick={() => void clearKey()} disabled={saving}>移除密钥</button>}<button className="button" onClick={() => void testAi()} disabled={testing || saving || !canSave}><PlugsConnected /> {testing ? "正在测试…" : "保存并测试"}</button><button className="button button-primary" onClick={() => void saveAi()} disabled={saving || !canSave}><FloppyDisk /> {saving ? "保存中…" : "保存配置"}</button></div>
       </section>
       <section className="settings-list">

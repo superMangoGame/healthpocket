@@ -143,7 +143,7 @@ function boilerplate(pages: LayoutPage[]): Set<string> {
   return new Set([...counts].filter(([, count]) => count >= Math.max(3, pages.length * 0.4)).map(([line]) => line))
 }
 
-function parseItem(section: string, line: string, page: number): LayoutItem | null {
+export function parseItem(section: string, line: string, page: number): LayoutItem | null {
   const tokens = line.replace(/^★\s*/, '').split(/\s+/).filter(Boolean)
   const valueIndex = tokens.findIndex((token, index) => index > 0 && VALUE_TOKEN_RE.test(token))
   if (valueIndex < 1) return null

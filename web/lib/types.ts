@@ -9,6 +9,8 @@ export interface Profile {
   birth_date: string | null;
   is_default: boolean;
   report_count: number;
+  /** Medical records other than checkup reports: visits, imaging, lab slips. */
+  record_count?: number;
   created_at: string;
 }
 
@@ -64,6 +66,69 @@ export interface Finding {
   confidence: number;
 }
 
+/** 体检报告之外的就医资料类别。 */
+export type RecordCategory = "outpatient" | "inpatient" | "imaging" | "lab" | "prescription" | "other";
+
+/** queued → processing → completed; needs_ai waits for the user to send an image or scan to the vision model. */
+export type RecordParseStatus = "queued" | "processing" | "completed" | "needs_ai" | "failed";
+
+export interface RecordFile {
+  id: string;
+  record_id: string;
+  filename: string;
+  mime_type: string;
+  size_bytes: number;
+  has_thumbnail: boolean;
+  created_at: string;
+  parse_status: RecordParseStatus | null;
+  /** pdf_text: read from the PDF on this computer; ai_vision: transcribed by the configured model. */
+  parse_method: "pdf_text" | "ai_vision" | null;
+  parse_error: string | null;
+  parsed_at: string | null;
+  measurement_count: number;
+  finding_count: number;
+}
+
+/** 门诊病历、出院小结、CT 等影像、化验单：只归档原始文件，不做指标解析。 */
+export interface MedicalRecord {
+  id: string;
+  profile_id: string;
+  category: RecordCategory;
+  title: string | null;
+  record_date: string;
+  year: number;
+  institution: string | null;
+  department: string | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+  files: RecordFile[];
+}
+
+/** A record with each file's recognized text and what was parsed from it. */
+export interface MedicalRecordDetail extends Omit<MedicalRecord, "files"> {
+  files: Array<RecordFile & { text: string | null }>;
+  measurements: Array<Measurement & { file_id: string }>;
+  findings: Array<Finding & { file_id: string }>;
+}
+
+/** Where a measurement or finding came from: a checkup report, or a medical record (then `report_id` is the record). */
+export interface EvidenceSource {
+  origin?: "report" | "record";
+  file_id?: string | null;
+  /** 体检报告, or the record's category and title. */
+  source_label?: string;
+}
+
+export interface AiCapabilities {
+  configured: boolean;
+  name: string | null;
+  model: string | null;
+  /** null when the model is not in the catalog (Ollama, custom endpoints): it may still work. */
+  images: boolean | null;
+  pdf: boolean | null;
+}
+
 export interface ReportDetail extends ReportSummary {
   measurements: Measurement[];
   findings: Finding[];
@@ -106,7 +171,7 @@ export interface RiskDomain {
   years: RiskCell[];
 }
 
-export interface RiskEvidence {
+export interface RiskEvidence extends EvidenceSource {
   kind: "measurement" | "finding";
   title: string;
   value: string | null;
@@ -139,7 +204,7 @@ export interface MetricDefinition {
   organ: string | null;
 }
 
-export interface TrendPoint {
+export interface TrendPoint extends EvidenceSource {
   report_id: string;
   year: number;
   exam_date: string | null;
@@ -164,7 +229,7 @@ export interface TrendSeries {
   points: TrendPoint[];
 }
 
-export interface OrganEvidence {
+export interface OrganEvidence extends EvidenceSource {
   kind: "measurement" | "finding";
   title: string;
   value: string | null;
@@ -452,8 +517,12 @@ export interface GarminDashboard {
 
 export interface InsightEvidence {
   id: string;
-  kind: "measurement" | "finding";
+  /** `record`: what the user wrote on a medical record. */
+  kind: "measurement" | "finding" | "record";
   report_id: string;
+  origin?: "report" | "record";
+  file_id?: string | null;
+  source?: string;
   year: number;
   exam_date: string | null;
   page: number;

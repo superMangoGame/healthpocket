@@ -3,11 +3,18 @@ import { METRICS, METRIC_BY_ID, RISK_DOMAINS, ORGAN_LABELS, type HealthStatus } 
 import { NORMAL_FINDING_RE, EXPLANATORY_FINDING_RE } from './parser.ts'
 import { collapseDoubledPhrases } from './report-layout.ts'
 import { ANATOMY_BY_ID, organOfAnatomy } from '../web/lib/anatomy.ts'
+import { recordSourceLabel, type RecordCategory } from './records.ts'
 import type { ReportSummary, Measurement, Finding, OrganEvidence } from '../web/lib/types.ts'
 
+/** Columns the health_* views add: which document a row came from. `report_id` is that document, a report or a medical record. */
+type SourceColumns = { origin: 'report' | 'record'; file_id: string | null; source_category: string; source_title: string | null }
 export type DbReport = ReportSummary & { stored_path: string; owner_id: string } & Record<string, unknown>
-export type DbMeasurement = Measurement & { report_id: string; year: number; exam_date: string | null } & Record<string, unknown>
-export type DbFinding = Finding & { report_id: string; year: number } & Record<string, unknown>
+export type DbMeasurement = Measurement & { report_id: string; year: number; exam_date: string | null } & Partial<SourceColumns> & Record<string, unknown>
+export type DbFinding = Finding & { report_id: string; year: number } & Partial<SourceColumns> & Record<string, unknown>
+
+/** Where a piece of evidence links back to, for the risk atlas, organ timeline and trends. */
+export const sourceOf = (row: Partial<SourceColumns>) => ({ origin: row.origin ?? 'report', file_id: row.file_id ?? null,
+  source_label: row.origin === 'record' ? recordSourceLabel(row.source_category as RecordCategory, row.source_title ?? null) : '体检报告' })
 type Evidence = OrganEvidence & { risk_key: string }
 export const RULES_VERSION = '2026.09.2'
 const severity: Record<HealthStatus, number> = { insufficient: 0, normal: 1, attention: 2, abnormal: 3 }
@@ -72,13 +79,14 @@ export class Aggregation {
 
   private collect(profile: string) {
     const reports = this.reports(profile)
-    const years = [...new Set(reports.map((report) => report.year).filter((year): year is number => year !== null))].sort((a, b) => a - b)
+    const found = new Set(reports.map((report) => report.year).filter((year): year is number => year !== null))
     const map = new Map<string, Evidence[]>()
+    // A year with only medical records still gets a column once something was recognized from them.
     const add = (year: number, organ: string, item: Evidence) => {
-      const key = `${year}:${organ}`; const list = map.get(key) ?? []; list.push(item); map.set(key, list)
+      const key = `${year}:${organ}`; const list = map.get(key) ?? []; list.push(item); map.set(key, list); found.add(year)
     }
-    for (const item of this.db.rows<DbMeasurement>(`SELECT m.*, r.year FROM measurements m JOIN reports r ON r.id=m.report_id
-      WHERE r.profile_id=:profile AND r.year IS NOT NULL AND m.confidence>=0.8`, { profile })) {
+    for (const item of this.db.rows<DbMeasurement>(`SELECT * FROM health_measurements
+      WHERE profile_id=:profile AND year IS NOT NULL AND confidence>=0.8`, { profile })) {
       const anatomy = (item.anatomy_id as string | null) || METRIC_BY_ID.get(item.canonical_id)?.anatomy || null
       const organ = anatomy ? organOfAnatomy(anatomy) : item.organ
       if (!organ) continue
@@ -91,20 +99,21 @@ export class Aggregation {
       add(item.year, organ, { kind: 'measurement', title: METRIC_BY_ID.get(item.canonical_id)?.display_name ?? item.raw_name,
         value: item.value_text ?? (item.value_numeric === null ? null : `${item.value_numeric} ${item.unit ?? ''}`.trim()),
         reference: item.ref_text, status: item.status, flag: item.flag, status_reason: reason, confidence: item.confidence,
-        report_id: item.report_id, page: item.page, anatomy_id: anatomy, anatomy_label: anatomyLabel(anatomy), risk_key: `metric:${item.canonical_id}` })
+        report_id: item.report_id, page: item.page, ...sourceOf(item), anatomy_id: anatomy, anatomy_label: anatomyLabel(anatomy), risk_key: `metric:${item.canonical_id}` })
     }
     const sourceReasons: Record<string, string> = { conclusion: '来自主检结论', summary: '来自分项小结', item: '明细表异常标记' }
-    for (const item of this.db.rows<DbFinding>(`SELECT f.*, r.year FROM findings f JOIN reports r ON r.id=f.report_id
-      WHERE r.profile_id=:profile AND r.year IS NOT NULL AND f.confidence>=0.8`, { profile })) {
+    for (const item of this.db.rows<DbFinding>(`SELECT * FROM health_findings
+      WHERE profile_id=:profile AND year IS NOT NULL AND confidence>=0.8`, { profile })) {
       const anatomy = (item.anatomy_id as string | null) || null
       const organ = anatomy ? organOfAnatomy(anatomy) : item.organ
       const text = `${item.title} ${item.content}`
       if (!organ || (item.severity !== 'normal' && (NORMAL_FINDING_RE.test(text) || EXPLANATORY_FINDING_RE.test(text)))) continue
+      const reason = item.origin === 'record' ? (item.source === 'item' ? '化验单异常标记' : `来自${item.section ?? '诊断'}`) : sourceReasons[String(item.source)] ?? '来自报告结论'
       add(item.year, organ, { kind: 'finding', title: item.title, value: item.content, reference: null, status: item.severity,
-        flag: null, status_reason: sourceReasons[String(item.source)] ?? '来自报告结论', confidence: item.confidence, report_id: item.report_id, page: item.page,
+        flag: null, status_reason: reason, confidence: item.confidence, report_id: item.report_id, page: item.page, ...sourceOf(item),
         anatomy_id: anatomy, anatomy_label: anatomyLabel(anatomy), risk_key: findingKey(item) })
     }
-    return { reports, years, map }
+    return { reports, years: [...found].sort((a, b) => a - b), map }
   }
 
   dashboard(profile: string) {
@@ -116,7 +125,7 @@ export class Aggregation {
     return { report_count: reports.length, year_from: years[0] ?? null, year_to: years.at(-1) ?? null,
       years: years.map((year) => cell(year, [...map].filter(([key]) => key.startsWith(`${year}:`)).flatMap(([, items]) => items))),
       latest_reports: reports.slice(0, 8).map(reportSummary),
-      recent_findings: this.db.rows(`SELECT f.id,f.title,f.content,f.severity,r.year,r.id AS report_id,f.page FROM findings f JOIN reports r ON r.id=f.report_id WHERE r.profile_id=:profile AND f.severity IN ('abnormal','attention') ORDER BY r.year DESC,f.severity DESC LIMIT 8`, { profile }),
+      recent_findings: this.db.rows(`SELECT id,title,content,severity,year,report_id,page,origin,file_id FROM health_findings WHERE profile_id=:profile AND severity IN ('abnormal','attention') ORDER BY year DESC,severity DESC LIMIT 8`, { profile }),
       risk_matrix: RISK_DOMAINS.map(([id, label, organs]) => ({ id, label, years: years.map((year) => cell(year, organs.flatMap((organ) => map.get(`${year}:${organ}`) ?? []))) })) }
   }
 
@@ -137,9 +146,9 @@ export class Aggregation {
   }
 
   trendRows(profile: string, canonical?: string) {
-    return this.db.rows<DbMeasurement>(`SELECT m.*,r.year,r.exam_date FROM measurements m JOIN reports r ON r.id=m.report_id
-      WHERE r.profile_id=:profile AND r.year IS NOT NULL AND m.confidence>=0.8 AND (m.value_numeric IS NOT NULL OR m.value_text IS NOT NULL)
-      ${canonical ? 'AND m.canonical_id=:canonical' : ''} ORDER BY r.year,r.exam_date`, { profile, ...(canonical ? { canonical } : {}) })
+    return this.db.rows<DbMeasurement>(`SELECT * FROM health_measurements
+      WHERE profile_id=:profile AND year IS NOT NULL AND confidence>=0.8 AND (value_numeric IS NOT NULL OR value_text IS NOT NULL)
+      ${canonical ? 'AND canonical_id=:canonical' : ''} ORDER BY year,exam_date`, { profile, ...(canonical ? { canonical } : {}) })
   }
 
   trend(profile: string, canonical: string, unit: string | null) {
@@ -152,7 +161,7 @@ export class Aggregation {
     return { canonical_id: canonical, display_name: metric.display_name, category: metric.category, organ: metric.organ,
       selected_unit: selected, available_units: units, points: rows.filter((item) => item.unit === selected).map((item) => {
         const { report_id, year, exam_date, value_numeric, value_text, unit, ref_low, ref_high, ref_text, status, confidence, page } = item
-        return { report_id, year, exam_date, value_numeric, value_text, unit, ref_low, ref_high, ref_text, status, confidence, page }
+        return { report_id, year, exam_date, value_numeric, value_text, unit, ref_low, ref_high, ref_text, status, confidence, page, ...sourceOf(item) }
       }) }
   }
 }

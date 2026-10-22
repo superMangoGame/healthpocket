@@ -228,6 +228,201 @@ test('API lifecycle, isolation, persisted restart, export, and embedded atlas', 
   }
 })
 
+test('medical records archive files by date and category, refuse executable content and join the backup', async () => {
+  const folder = await mkdtemp(join(tmpdir(), 'healthpocket-records-test-'))
+  const previous = process.env.HEALTHPOCKET_DATA_DIR; process.env.HEALTHPOCKET_DATA_DIR = folder
+  const backend = new BackendManager(folder)
+  const server = createServer((req, res) => {
+    void backend.proxy(req, res).catch((error: unknown) => { res.writeHead(500); res.end(String(error)) })
+  })
+  try {
+    await backend.ensureStarted(); server.listen(0, '127.0.0.1'); await once(server, 'listening')
+    const address = server.address(); assert.ok(address && typeof address !== 'string')
+    const origin = `http://127.0.0.1:${address.port}${API_PREFIX}`
+    const call = (path: string, init?: RequestInit) => fetch(`${origin}${path}`, init)
+    const send = (path: string, method: string, body: unknown) => call(path, { method, body: JSON.stringify(body) })
+    const profile = (await (await call('/profiles')).json())[0]
+    assert.equal((await send('/records', 'POST', { profile_id: profile.id, category: 'xray', record_date: '2024-03-15' })).status, 422)
+    assert.equal((await send('/records', 'POST', { profile_id: profile.id, category: 'imaging', record_date: '2999-01-01' })).status, 422)
+    assert.equal((await send('/records', 'POST', { profile_id: profile.id, category: 'imaging', record_date: '2024-02-30' })).status, 422)
+    const created = await send('/records', 'POST', { profile_id: profile.id, category: 'imaging', record_date: '2024-03-15', title: ' 胸部 CT 平扫 ', institution: '协和医院', notes: '右肺上叶微小结节' })
+    assert.equal(created.status, 201, await created.clone().text())
+    const record = await created.json()
+    assert.equal(record.title, '胸部 CT 平扫'); assert.equal(record.year, 2024); assert.deepEqual(record.files, [])
+
+    const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01, 0xff, 0xd9])
+    const thumbnail = Buffer.from([0xff, 0xd8, 0xff, 0xdb, 0x00, 0x01, 0xff, 0xd9])
+    const upload = (content: Buffer, name: string, thumb?: Buffer) => {
+      const form = new FormData()
+      form.append('file', new Blob([new Uint8Array(content)]), name)
+      if (thumb) form.append('thumbnail', new Blob([new Uint8Array(thumb)], { type: 'image/jpeg' }), 'thumb.jpg')
+      return call(`/records/${record.id}/files`, { method: 'POST', body: form })
+    }
+    const image = await upload(jpeg, 'ct-1.jpg', thumbnail); assert.equal(image.status, 201, await image.clone().text())
+    const imageFile = await image.json(); assert.equal(imageFile.mime_type, 'image/jpeg'); assert.equal(imageFile.has_thumbnail, true)
+    // A page that only calls itself a picture must never be served from the app's origin.
+    assert.equal((await upload(Buffer.from('<html><script>alert(1)</script></html>'), 'scan.jpg')).status, 415)
+    assert.equal((await upload(jpeg, 'again.jpg')).status, 409)
+    const pdf = await upload(syntheticPdf(), '出院小结.pdf'); assert.equal(pdf.status, 201)
+    const pdfFile = await pdf.json(); assert.equal(pdfFile.mime_type, 'application/pdf'); assert.equal(pdfFile.has_thumbnail, false)
+
+    const listed = await (await call(`/records?profile_id=${profile.id}`)).json()
+    assert.equal(listed.length, 1); assert.deepEqual(listed[0].files.map((file: { filename: string }) => file.filename), ['ct-1.jpg', '出院小结.pdf'])
+    const original = await call(`/records/${record.id}/files/${imageFile.id}`)
+    assert.equal(original.headers.get('content-type'), 'image/jpeg'); assert.equal(original.headers.get('x-content-type-options'), 'nosniff')
+    assert.deepEqual(Buffer.from(await original.arrayBuffer()), jpeg)
+    assert.deepEqual(Buffer.from(await (await call(`/records/${record.id}/files/${imageFile.id}?thumb=1`)).arrayBuffer()), thumbnail)
+    assert.deepEqual(Buffer.from(await (await call(`/records/${record.id}/files/${pdfFile.id}?thumb=1`)).arrayBuffer()), syntheticPdf())
+
+    const updated = await send(`/records/${record.id}`, 'PUT', { category: 'inpatient', record_date: '2023-12-01', title: '肺结节随访', department: '胸外科' })
+    assert.equal(updated.status, 200); const changed = await updated.json()
+    assert.equal(changed.category, 'inpatient'); assert.equal(changed.year, 2023); assert.equal(changed.institution, null); assert.equal(changed.files.length, 2)
+    assert.equal((await (await call('/profiles')).json())[0].record_count, 1)
+
+    const zip = unzipSync(new Uint8Array(await (await call('/exports', { method: 'POST' })).arrayBuffer()))
+    const manifest = JSON.parse(Buffer.from(zip['manifest.json']!).toString('utf8'))
+    assert.equal(manifest.records.length, 1); assert.equal(manifest.records[0].files.length, 2)
+    for (const file of manifest.records[0].files) assert.ok(zip[file.path], file.path)
+
+    const storage = join(folder, 'reports-ts', 'records')
+    assert.equal((await readdir(storage)).length, 3)
+    assert.equal((await call(`/records/${record.id}/files/${imageFile.id}`, { method: 'DELETE' })).status, 204)
+    assert.equal((await readdir(storage)).length, 1)
+    assert.equal((await call(`/records/${record.id}/files/${imageFile.id}`)).status, 404)
+    assert.equal((await call(`/records/${record.id}`, { method: 'DELETE' })).status, 204)
+    assert.equal((await call(`/records/${record.id}`)).status, 404)
+    assert.deepEqual(await readdir(storage), [])
+
+    const second = await (await send('/records', 'POST', { profile_id: profile.id, category: 'lab', record_date: '2022-05-01' })).json()
+    const form = new FormData(); form.append('file', new Blob([new Uint8Array(jpeg)]), 'lab.jpg')
+    assert.equal((await call(`/records/${second.id}/files`, { method: 'POST', body: form })).status, 201)
+    assert.equal((await call('/data', { method: 'DELETE' })).status, 204)
+    assert.deepEqual(await (await call(`/records?profile_id=${profile.id}`)).json(), [])
+    assert.deepEqual(await readdir(storage), [])
+  } finally {
+    server.closeAllConnections(); server.close(); backend.dispose(); await backend.database.close()
+    if (previous === undefined) delete process.env.HEALTHPOCKET_DATA_DIR; else process.env.HEALTHPOCKET_DATA_DIR = previous
+    await rm(folder, { recursive: true, force: true })
+  }
+})
+
+test('medical records are parsed locally or by the vision model and reach trends, the risk atlas and the AI', async () => {
+  const folder = await mkdtemp(join(tmpdir(), 'healthpocket-record-parse-'))
+  const previous = process.env.HEALTHPOCKET_DATA_DIR; process.env.HEALTHPOCKET_DATA_DIR = folder
+  const secretValues = new Map<string, string>()
+  const sent: Array<{ mediaType: string; bytes: number; hint: string }> = []
+  let insightPrompt = ''; let chat: { messages: string; tools?: ToolSet } | null = null
+  const runner: AiModelRunner = {
+    async test() {},
+    async generate(_settings, _key, prompt): Promise<InsightOutput> {
+      insightPrompt = prompt
+      return { summary: '甲状腺需要随访。', highlights: [{ title: 'TSH 偏高', explanation: '化验单 TSH 高于参考范围。', level: 'attention', evidence_ids: ['E001'] }], limitations: [], doctor_questions: [] }
+    },
+    async extract(_settings, _key, files, hint) {
+      for (const file of files) sent.push({ mediaType: file.mediaType, bytes: file.data.length, hint })
+      return { text: '项目 结果 单位 参考范围\n促甲状腺激素 TSH 5.82 mIU/L 0.27-4.2 ↑\n诊断：桥本甲状腺炎', institution: '北京协和医院',
+        diagnoses: [{ title: '桥本甲状腺炎', detail: null }], measurements: [{ name: '游离甲状腺素 FT4', value: '13.1', unit: 'pmol/L', reference: '12-22', flag: null }] }
+    },
+    stream(_settings, _key, messages, tools) {
+      chat = { messages: JSON.stringify(messages.at(-1)?.content), tools }
+      return createUIMessageStream({ execute: ({ writer }) => { writer.write({ type: 'text-start', id: 't' }); writer.write({ type: 'text-delta', id: 't', delta: '好的' }); writer.write({ type: 'text-end', id: 't' }) } })
+    },
+  }
+  const backend = new BackendManager(folder, { secretStore: { get: (id) => secretValues.get(id) ?? null, set: (id, value) => { secretValues.set(id, value) } }, aiRunner: runner })
+  const server = createServer((req, res) => { void backend.proxy(req, res).catch((error: unknown) => { res.writeHead(500); res.end(String(error)) }) })
+  try {
+    await backend.ensureStarted(); server.listen(0, '127.0.0.1'); await once(server, 'listening')
+    const address = server.address(); assert.ok(address && typeof address !== 'string')
+    const api = `http://127.0.0.1:${address.port}${API_PREFIX}`
+    const json = (body: unknown) => ({ headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+    const profile = (await (await fetch(`${api}/profiles`)).json())[0]
+    const record = await (await fetch(`${api}/records`, { method: 'POST', ...json({ profile_id: profile.id, category: 'lab', record_date: '2024-03-15', title: '甲状腺功能', notes: '医生说半年后复查' }) })).json()
+    const upload = async (content: Buffer, name: string, recognize = false) => {
+      const form = new FormData(); form.append('file', new Blob([new Uint8Array(content)]), name)
+      if (recognize) form.append('recognize', '1')
+      const response = await fetch(`${api}/records/${record.id}/files`, { method: 'POST', body: form })
+      assert.equal(response.status, 201, await response.clone().text())
+      return response.json()
+    }
+    const settle = async (fileId: string) => {
+      for (let attempt = 0; attempt < 200; attempt++) {
+        const detail = await (await fetch(`${api}/records/${record.id}`)).json()
+        const file = detail.files.find((item: { id: string }) => item.id === fileId)
+        if (!['queued', 'processing'].includes(file.parse_status)) return { detail, file }
+        await new Promise((resolve) => setTimeout(resolve, 20))
+      }
+      throw new Error('record parsing did not settle')
+    }
+
+    // A PDF with a text layer is read on this computer; nothing goes to the model.
+    const pdf = await upload(syntheticPdf('Liver ALT 32 U/L 9-50'), '肝功能.pdf')
+    const local = await settle(pdf.id)
+    assert.equal(local.file.parse_status, 'completed'); assert.equal(local.file.parse_method, 'pdf_text')
+    const alt = local.detail.measurements.find((item: { canonical_id: string }) => item.canonical_id === 'alt')
+    assert.equal(alt?.value_numeric, 32); assert.equal(alt?.ref_text, '9-50')
+    assert.match(local.file.text, /ALT 32/)
+    assert.equal(sent.length, 0)
+
+    // A photo waits until recognition is asked for, and fails clearly without a model.
+    const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01, 0xff, 0xd9])
+    const photo = await upload(jpeg, 'lab-photo.jpg')
+    assert.equal(photo.parse_status, 'needs_ai'); assert.equal(sent.length, 0)
+    assert.equal((await fetch(`${api}/records/${record.id}/files/${photo.id}/reparse`, { method: 'POST' })).status, 422)
+    assert.equal((await fetch(`${api}/records/${record.id}/files/${photo.id}/recognize`, { method: 'POST' })).status, 202)
+    const unconfigured = await settle(photo.id)
+    assert.equal(unconfigured.file.parse_status, 'failed'); assert.match(unconfigured.file.parse_error, /配置 AI/)
+
+    assert.equal((await fetch(`${api}/ai/settings`, { method: 'PUT', ...json({ provider: 'deepseek', model: 'vision-test', api_key: 'k' }) })).status, 200)
+    const capabilities = await (await fetch(`${api}/ai/capabilities`)).json()
+    assert.equal(capabilities.configured, true); assert.equal(capabilities.images, null, 'a model the catalog does not list is not ruled out')
+    assert.equal((await fetch(`${api}/records/${record.id}/files/${photo.id}/recognize`, { method: 'POST' })).status, 202)
+    const recognized = await settle(photo.id)
+    assert.equal(recognized.file.parse_status, 'completed', recognized.file.parse_error); assert.equal(recognized.file.parse_method, 'ai_vision')
+    assert.deepEqual(sent.map((item) => item.mediaType), ['image/jpeg']); assert.match(sent[0]!.hint, /检验报告（甲状腺功能）/)
+    assert.equal(recognized.detail.institution, '北京协和医院', 'a blank hospital is filled in from the document')
+    const tsh = recognized.detail.measurements.find((item: { canonical_id: string }) => item.canonical_id === 'tsh')
+    assert.equal(tsh.value_numeric, 5.82); assert.equal(tsh.status, 'abnormal'); assert.equal(tsh.file_id, photo.id)
+    assert.ok(recognized.detail.measurements.some((item: { canonical_id: string }) => item.canonical_id === 'ft4'), 'structured rows join the text')
+    assert.ok(recognized.detail.findings.some((item: { title: string }) => item.title === '桥本甲状腺炎'))
+    const listed = (await (await fetch(`${api}/records?profile_id=${profile.id}`)).json())[0].files.find((item: { id: string }) => item.id === photo.id)
+    assert.ok(listed.measurement_count >= 2); assert.ok(listed.finding_count >= 1); assert.equal(listed.text, undefined, 'the list stays light')
+
+    // Recognized values join checkup data in trends, the risk atlas and the organ timeline.
+    const trend = await (await fetch(`${api}/metrics/trends?profile_id=${profile.id}&canonical_id=tsh`)).json()
+    assert.equal(trend.points.length, 1); assert.equal(trend.points[0].origin, 'record'); assert.equal(trend.points[0].file_id, photo.id)
+    assert.match(trend.points[0].source_label, /检验报告 · 甲状腺功能/)
+    const dashboard = await (await fetch(`${api}/dashboard?profile_id=${profile.id}`)).json()
+    assert.deepEqual(dashboard.years.map((item: { year: number }) => item.year), [2024], 'a year with only records gets a column')
+    const thyroid = await (await fetch(`${api}/organs/thyroid/timeline?profile_id=${profile.id}`)).json()
+    assert.ok(thyroid.years[0].evidence.some((item: { origin: string; report_id: string }) => item.origin === 'record' && item.report_id === record.id))
+
+    // The AI sees recognized data, the user's own notes, and can read the full text.
+    assert.equal((await fetch(`${api}/ai/insights`, { method: 'POST', ...json({ profile_id: profile.id, dimension: 'comprehensive' }) })).status, 201)
+    assert.match(insightPrompt, /桥本甲状腺炎/); assert.match(insightPrompt, /"origin":"record"/); assert.match(insightPrompt, /医生说半年后复查/)
+    assert.equal((await (await fetch(`${api}/ai/insights?profile_id=${profile.id}`)).json())[0].stale, false)
+    const reply = await fetch(`${api}/ai/chat`, { method: 'POST', ...json({ profile_id: profile.id, messages: [{ id: 'u1', role: 'user', parts: [{ type: 'text', text: '甲状腺怎么样？' }] }] }) })
+    assert.equal(reply.status, 200, await reply.clone().text()); await reply.text()
+    const { messages, tools } = chat as unknown as { messages: string; tools?: ToolSet }
+    assert.match(messages, /medical-records/); assert.match(messages, /R001/); assert.match(messages, /TSH 5\.82/)
+    assert.ok(tools?.medical_record_detail, 'the chat can open a record')
+    const run = (input: unknown) => (tools!.medical_record_detail!.execute as (input: unknown, options: unknown) => Promise<Record<string, unknown>>)(input, { toolCallId: 'x', messages: [] })
+    const opened = await run({ id: 'R001' })
+    assert.match(JSON.stringify(opened.files), /促甲状腺激素/); assert.ok((opened.findings as unknown[]).length >= 1)
+    assert.match(String((await run({ id: 'R099' })).error), /没有编号/)
+
+    // A new recognition marks saved analyses stale; deleting the file takes its data with it.
+    assert.equal((await fetch(`${api}/records/${record.id}/files/${pdf.id}/reparse`, { method: 'POST' })).status, 202)
+    await settle(pdf.id)
+    assert.equal((await (await fetch(`${api}/ai/insights?profile_id=${profile.id}`)).json())[0].stale, true)
+    assert.equal((await fetch(`${api}/records/${record.id}/files/${photo.id}`, { method: 'DELETE' })).status, 204)
+    assert.equal((await (await fetch(`${api}/metrics/trends?profile_id=${profile.id}&canonical_id=tsh`)).json()).points.length, 0)
+  } finally {
+    server.closeAllConnections(); server.close(); backend.dispose(); await backend.database.close()
+    if (previous === undefined) delete process.env.HEALTHPOCKET_DATA_DIR; else process.env.HEALTHPOCKET_DATA_DIR = previous
+    await rm(folder, { recursive: true, force: true })
+  }
+})
+
 test('batch uploads parse concurrently with a bounded worker pool', async () => {
   const folder = await mkdtemp(join(tmpdir(), 'healthpocket-concurrency-test-'))
   const previous = process.env.HEALTHPOCKET_DATA_DIR; process.env.HEALTHPOCKET_DATA_DIR = folder
@@ -408,7 +603,7 @@ test('daily advice reads Garmin only, the overview reads reports only, and the A
     },
     async advise(_settings, _key, prompt, system) {
       calls.push({ system, data: (JSON.parse(prompt) as { data: Record<string, unknown> }).data })
-      return { summary: /体检报告和 Garmin/.test(system) ? '综合建议' : '日常建议', recommendations: [{ title: '固定作息', category: 'sleep', priority: 'high', why: '睡眠偏短。', actions: ['每天 7:00 起床'] }], cautions: [] }
+      return { summary: /体检报告、就医记录/.test(system) ? '综合建议' : '日常建议', recommendations: [{ title: '固定作息', category: 'sleep', priority: 'high', why: '睡眠偏短。', actions: ['每天 7:00 起床'] }], cautions: [] }
     },
   }
   const backend = new BackendManager(folder, { secretStore: { get: (id) => secretValues.get(id) ?? null, set: (id, value) => { secretValues.set(id, value) } }, aiRunner: runner })
@@ -445,7 +640,7 @@ test('daily advice reads Garmin only, the overview reads reports only, and the A
 
     assert.equal(await (await fetch(`${api}/ai/advice?profile_id=${profile.id}`)).json(), null)
     assert.equal((await post(`${api}/ai/advice`, { profile_id: profile.id })).status, 200)
-    assert.match(calls[1]!.system, /体检报告和 Garmin/)
+    assert.match(calls[1]!.system, /体检报告、就医记录/)
     assert.match(JSON.stringify(calls[1]!.data.reports), /总胆固醇/); assert.ok(calls[1]!.data.garmin, 'synced Garmin days join the reports')
     assert.equal((await (await fetch(`${api}/ai/advice?profile_id=${profile.id}`)).json()).content.summary, '综合建议')
     assert.equal((await (await fetch(`${api}/daily/insights?profile_id=${profile.id}&${range}`)).json()).advice.content.summary, '日常建议')

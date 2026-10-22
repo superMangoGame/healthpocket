@@ -33,6 +33,7 @@ export class BackendManager {
         this.phase = 'running'
         void this.api.reparseOutdated().catch((error: unknown) => console.error('[HealthPocket] reparse outdated failed', error))
         void this.api.slimGarminSnapshots().catch((error: unknown) => console.error('[HealthPocket] slim Garmin snapshots failed', error))
+        void this.api.resumeRecords().catch((error: unknown) => console.error('[HealthPocket] resume record parsing failed', error))
       }).catch((error: unknown) => {
         this.phase = 'failed'; this.error = error instanceof Error ? error.message : String(error)
         this.ready = null

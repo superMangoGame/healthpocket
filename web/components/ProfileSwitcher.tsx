@@ -68,7 +68,7 @@ export function ProfileSwitcher({ compact = false }: { compact?: boolean }) {
           <span className="profile-avatar" aria-hidden="true">{activeProfile?.name.slice(0, 1) || "·"}</span>
           <span className="profile-switcher-copy">
             <strong>{activeProfile?.name || (loading ? "加载中" : "健康档案")}</strong>
-            <small>{activeProfile ? `${relationLabels[activeProfile.relation]} · ${activeProfile.report_count} 份报告` : profileError}</small>
+            <small>{activeProfile ? `${relationLabels[activeProfile.relation]} · ${activeProfile.report_count + (activeProfile.record_count ?? 0)} 份报告` : profileError}</small>
           </span>
           <CaretDown size={14} />
         </button>
@@ -78,7 +78,7 @@ export function ProfileSwitcher({ compact = false }: { compact?: boolean }) {
             {profiles.map((profile) => (
               <button key={profile.id} role="menuitemradio" aria-checked={profile.id === activeProfile?.id} onClick={() => { selectProfile(profile.id); setOpen(false); }}>
                 <span className="profile-avatar small" aria-hidden="true">{profile.name.slice(0, 1)}</span>
-                <span><strong>{profile.name}</strong><small>{relationLabels[profile.relation]} · {profile.report_count} 份报告</small></span>
+                <span><strong>{profile.name}</strong><small>{relationLabels[profile.relation]} · {profile.report_count + (profile.record_count ?? 0)} 份报告</small></span>
                 {profile.id === activeProfile?.id && <Check className="profile-check" weight="bold" />}
               </button>
             ))}

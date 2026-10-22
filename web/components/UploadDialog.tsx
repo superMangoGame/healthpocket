@@ -4,14 +4,16 @@ import {
   CheckCircle,
   ClockCountdown,
   FilePdf,
+  Plus,
   SpinnerGap,
-  UploadSimple,
   WarningCircle,
   X,
 } from "@phosphor-icons/react";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { apiFetch } from "@/lib/api";
+import { formatBytes, isImageFile } from "@/lib/records";
 import { useProfiles } from "@/components/ProfileProvider";
+import { RecordForm } from "@/components/RecordForm";
 
 interface UploadResult {
   report: { id: string };
@@ -45,11 +47,6 @@ const terminalStatuses = new Set<BatchStatus>([
   "failed",
 ]);
 
-function formatBytes(bytes: number): string {
-  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-}
-
 function statusIcon(status: BatchStatus) {
   if (status === "completed") return <CheckCircle weight="fill" />;
   if (["partial", "skipped", "failed"].includes(status)) return <WarningCircle weight="fill" />;
@@ -57,13 +54,31 @@ function statusIcon(status: BatchStatus) {
   return <ClockCountdown />;
 }
 
+type DialogMode = "exam" | "record";
+
+/**
+ * 添加报告：体检报告批量导入并自动解析；病历、CT 等影像、化验单按日期和类别归档原文件。
+ */
 export function UploadDialog({ onComplete }: { onComplete?: () => void }) {
   const { activeProfile, activeProfileId, refreshProfiles } = useProfiles();
   const dialog = useRef<HTMLDialogElement>(null);
+  const [mode, setMode] = useState<DialogMode>("exam");
   const [dragging, setDragging] = useState(false);
   const [items, setItems] = useState<BatchItem[]>([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [recordBusy, setRecordBusy] = useState(false);
+  const [recordFiles, setRecordFiles] = useState<File[]>([]);
+  // Remounts the record form for every opening, so a finished record never lingers.
+  const [recordFormKey, setRecordFormKey] = useState(0);
+  // A record is saved before its files; closing the dialog early must still refresh the page.
+  const recordTouched = useRef(false);
+  const locked = busy || recordBusy;
+  const switchToRecords = useCallback((files: File[]) => {
+    setRecordFiles(files);
+    setRecordFormKey((value) => value + 1);
+    setMode("record");
+  }, []);
 
   const updateItem = useCallback((id: string, patch: Partial<BatchItem>) => {
     setItems((current) =>
@@ -152,6 +167,13 @@ export function UploadDialog({ onComplete }: { onComplete?: () => void }) {
         return;
       }
 
+      // Photos of a medical record or a CT film dropped here belong in the other tab.
+      const images = selected.filter(isImageFile);
+      if (images.length && !selected.some((file) => file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf"))) {
+        switchToRecords(images);
+        return;
+      }
+
       const unique = new Map<string, File>();
       let invalidCount = 0;
       for (const file of selected.slice(0, MAX_BATCH_FILES)) {
@@ -209,7 +231,7 @@ export function UploadDialog({ onComplete }: { onComplete?: () => void }) {
         setBusy(false);
       }
     },
-    [activeProfileId, busy, onComplete, refreshProfiles, uploadOne],
+    [activeProfileId, busy, onComplete, refreshProfiles, switchToRecords, uploadOne],
   );
 
   const overallProgress = useMemo(
@@ -231,38 +253,79 @@ export function UploadDialog({ onComplete }: { onComplete?: () => void }) {
       setItems([]);
       setError("");
     }
+    if (!locked) {
+      setRecordFiles([]);
+      setRecordFormKey((value) => value + 1);
+    }
     dialog.current?.showModal();
+  };
+
+  const recordSaved = async () => {
+    recordTouched.current = false;
+    dialog.current?.close();
+    if (activeProfileId) await refreshProfiles(activeProfileId);
+    onComplete?.();
   };
 
   return (
     <>
       <button className="button button-primary" disabled={!activeProfileId} onClick={open}>
-        <UploadSimple size={18} /> 批量导入
+        <Plus size={18} weight="bold" /> 添加报告
       </button>
       <dialog
         ref={dialog}
         className="upload-dialog"
         onCancel={(event) => {
-          if (busy) event.preventDefault();
+          if (locked) event.preventDefault();
         }}
         onClose={() => {
           if (!busy) setDragging(false);
+          if (recordTouched.current) {
+            recordTouched.current = false;
+            void (activeProfileId ? refreshProfiles(activeProfileId) : Promise.resolve()).then(() => onComplete?.());
+          }
         }}
       >
         <div className="dialog-head">
           <div>
-            <h2>批量导入体检报告</h2>
-            <p>报告将保存到「{activeProfile?.name || "当前档案"}」并最多同时解析 3 份</p>
+            <h2>添加报告</h2>
+            <p>
+              保存到「{activeProfile?.name || "当前档案"}」·{" "}
+              {mode === "exam" ? "体检 PDF 会自动识别指标，最多同时解析 3 份" : "病历、影像、化验单按日期和类别归档，原文件只存在本机"}
+            </p>
           </div>
           <button
             className="button button-icon"
             aria-label="关闭"
-            disabled={busy}
+            disabled={locked}
             onClick={() => dialog.current?.close()}
           >
             <X />
           </button>
         </div>
+        <div className="upload-mode-tabs" role="tablist" aria-label="报告类型">
+          <button type="button" role="tab" aria-selected={mode === "exam"} disabled={locked} onClick={() => setMode("exam")}>
+            <strong>体检报告</strong><small>PDF · 自动解析指标</small>
+          </button>
+          <button type="button" role="tab" aria-selected={mode === "record"} disabled={locked} onClick={() => setMode("record")}>
+            <strong>病历 / 影像 / 化验单</strong><small>PDF 或图片 · 按时间归档</small>
+          </button>
+        </div>
+        {mode === "record" && activeProfileId ? (
+          <div className="dialog-body">
+            <RecordForm
+              key={recordFormKey}
+              profileId={activeProfileId}
+              initialFiles={recordFiles}
+              onBusyChange={(value) => {
+                setRecordBusy(value);
+                if (value) recordTouched.current = true;
+              }}
+              onCancel={() => dialog.current?.close()}
+              onSaved={() => void recordSaved()}
+            />
+          </div>
+        ) : (
         <div className="dialog-body">
           <label
             className={`upload-drop ${dragging ? "dragging" : ""} ${busy ? "disabled" : ""}`}
@@ -299,6 +362,7 @@ export function UploadDialog({ onComplete }: { onComplete?: () => void }) {
           </label>
           <p className="muted upload-help">
             扫描型 PDF 请先生成可搜索文字层；当前版本不包含 OCR。无法可靠识别的内容不会参与异常状态汇总。
+            门诊病历、CT 图片等请切换到「病历 / 影像 / 化验单」。
           </p>
 
           {items.length > 0 && (
@@ -341,6 +405,7 @@ export function UploadDialog({ onComplete }: { onComplete?: () => void }) {
             </div>
           )}
         </div>
+        )}
       </dialog>
     </>
   );

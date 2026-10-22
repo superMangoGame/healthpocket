@@ -5,6 +5,7 @@ import { Area, CartesianGrid, ComposedChart, Line, ReferenceLine, ResponsiveCont
 import Link from "next/link";
 import { StatusBadge } from "@/components/StatusBadge";
 import { apiFetch, withProfile } from "@/lib/api";
+import { evidenceHref, evidenceLink } from "@/lib/records";
 import type { MetricDefinition, TrendSeries } from "@/lib/types";
 import { useProfiles } from "@/components/ProfileProvider";
 
@@ -50,7 +51,8 @@ export function TrendExplorer() {
     for (const metric of metrics) map.set(metric.category, [...(map.get(metric.category) || []), metric]);
     return map;
   }, [metrics]);
-  const data = series?.points.map((point) => ({ ...point, refBand: point.ref_low != null && point.ref_high != null ? point.ref_high - point.ref_low : null })) || [];
+  // A checkup and a hospital lab slip can share a year, so the axis reads the date when there is one.
+  const data = series?.points.map((point) => ({ ...point, when: point.exam_date ?? String(point.year), refBand: point.ref_low != null && point.ref_high != null ? point.ref_high - point.ref_low : null })) || [];
   const values = series?.points.filter((point) => point.value_numeric != null).map((point) => point.value_numeric as number) || [];
   const hasNumericValues = values.length > 0;
   const latest = series?.points.at(-1);
@@ -88,8 +90,8 @@ export function TrendExplorer() {
           {!data.length ? <div className="empty-state" style={{ minHeight: 340 }}><p>这个指标尚无可信数据。</p></div> : !hasNumericValues ? (
             <div className="categorical-trend" aria-label={`${series?.display_name || "分类指标"}历年结果`}>
               {series?.points.map((point) => (
-                <div className="categorical-trend-item" key={`${point.report_id}-${point.year}`}>
-                  <span className="mono categorical-trend-year">{point.year}</span>
+                <div className="categorical-trend-item" key={`${point.report_id}-${point.file_id ?? ""}-${point.year}`}>
+                  <span className="mono categorical-trend-year">{point.exam_date ?? point.year}</span>
                   <span className={`categorical-trend-node tone-${point.status}`} aria-hidden="true" />
                   <strong>{point.value_text || "未记录结果"}</strong>
                   <StatusBadge status={point.confidence < .8 ? "insufficient" : point.status} compact />
@@ -101,7 +103,7 @@ export function TrendExplorer() {
               <ResponsiveContainer width="100%" height="100%">
                 <ComposedChart data={data} margin={{ top: 24, right: 24, bottom: 8, left: -6 }}>
                   <CartesianGrid stroke="var(--line)" vertical={false} strokeDasharray="3 3" />
-                  <XAxis dataKey="year" tick={{ fill: "var(--muted)", fontSize: 12 }} axisLine={{ stroke: "var(--line)" }} tickLine={false} />
+                  <XAxis dataKey="when" tick={{ fill: "var(--muted)", fontSize: 12 }} axisLine={{ stroke: "var(--line)" }} tickLine={false} />
                   <YAxis tick={{ fill: "var(--muted)", fontSize: 11 }} axisLine={false} tickLine={false} domain={["auto", "auto"]} />
                   <Tooltip contentStyle={{ background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 8, fontSize: 12 }} formatter={(value, name) => name === "value_numeric" ? [value, series?.display_name] : [value, "参考范围"]} />
                   <Area type="linear" dataKey="ref_low" stackId="range" stroke="none" fill="transparent" connectNulls={false} />
@@ -118,10 +120,10 @@ export function TrendExplorer() {
           )}
         </div>
         <section className="section">
-          <div className="section-head"><h3 className="section-title">来源证据</h3>{series && series.points.length > 0 && <span className="muted mono">已记录 {series.points.length} 个年份</span>}</div>
+          <div className="section-head"><h3 className="section-title">来源证据</h3>{series && series.points.length > 0 && <span className="muted mono">已记录 {series.points.length} 次</span>}</div>
           <div className="panel table-scroll">
-            <table className="data-table"><thead><tr><th>年份</th><th>检测结果</th><th>参考范围</th><th>状态</th><th>来源</th></tr></thead><tbody>
-              {series?.points.map((point) => <tr key={`${point.report_id}-${point.year}`}><td className="mono">{point.year}</td><td className="mono"><strong>{point.value_numeric ?? point.value_text}</strong> {point.unit}</td><td className="mono">{point.ref_text || "无"}</td><td><StatusBadge status={point.confidence < .8 ? "insufficient" : point.status} compact /></td><td><Link className="link" href={`/reports/detail?id=${point.report_id}`}>PDF 第 {point.page} 页</Link></td></tr>)}
+            <table className="data-table"><thead><tr><th>日期</th><th>检测结果</th><th>参考范围</th><th>状态</th><th>来源</th></tr></thead><tbody>
+              {series?.points.map((point) => <tr key={`${point.report_id}-${point.file_id ?? ""}-${point.year}`}><td className="mono">{point.exam_date ?? point.year}</td><td className="mono"><strong>{point.value_numeric ?? point.value_text}</strong> {point.unit}</td><td className="mono">{point.ref_text || "无"}</td><td><StatusBadge status={point.confidence < .8 ? "insufficient" : point.status} compact /></td><td><Link className="link" href={evidenceHref(point)}>{point.origin === "record" ? evidenceLink(point) : `体检报告 第 ${point.page} 页`}</Link></td></tr>)}
             </tbody></table>
           </div>
         </section>

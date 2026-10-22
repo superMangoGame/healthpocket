@@ -6,25 +6,20 @@ import { basename, join } from 'node:path'
 import { zipSync, strToU8 } from 'fflate'
 import { pipeUIMessageStreamToResponse } from 'ai'
 import { json } from './backend.ts'
+import { HttpError } from './http-error.ts'
 import { LocalDatabase, OWNER_ID } from './database.ts'
+import { RecordStore, MAX_RECORD_FILE_BYTES } from './records.ts'
 import { Aggregation, reportSummary, RULES_VERSION, type DbReport, type DbMeasurement } from './aggregation.ts'
 import { METRICS, ORGAN_LABELS } from './metrics.ts'
 import { ANATOMY } from '../web/lib/anatomy.ts'
-import { inspectPdf, parsePdf, type ParsedReport } from './parser.ts'
+import { inspectPdf, parsePdf, type PageData, type ParsedReport } from './parser.ts'
 import { buildDailyInsights, type DailyInsights } from './daily-insights.ts'
 import { AiService, describeModelError, type AiModelRunner, type InsightRequest, type SecretStore } from './ai.ts'
 import { GarminActionError, GarminService, GarminSyncBusyError, type GarminClientFactory, type GarminServiceOptions } from './garmin.ts'
 
+export { HttpError }
+
 export const PARSER_VERSION = '2026.10-anatomy.1'
-/**
- * An error the client should render verbatim. `extra` carries the fields the
- * settings page needs to explain a failure - which stage of the Garmin login
- * fell over, and what the user can do about it - and is spread into the JSON
- * error body by `BackendManager.proxy` alongside `detail`.
- */
-export class HttpError extends Error {
-  constructor(readonly status: number, message: string, readonly extra: Row = {}) { super(message) }
-}
 type Row = Record<string, unknown>
 const now = () => new Date().toISOString()
 const MAX_PDF_BYTES = 80 * 1024 * 1024
@@ -52,6 +47,8 @@ export interface LocalApiOptions {
   updater?: Updater
   /** The running plugin version, shown on the settings page. */
   appVersion?: string
+  /** Reads a medical record PDF's text layer; injectable for tests. */
+  recordPdfReader?: (content: Uint8Array) => Promise<PageData[]>
 }
 
 export interface UpdateStatus {
@@ -130,6 +127,7 @@ export class LocalApi {
   private readonly parser: (content: Uint8Array) => Promise<ParsedReport>
   private readonly ai: AiService
   private readonly garmin: GarminService
+  private readonly records: RecordStore
   private readonly garminLaneStallMs: number
   private readonly garminEnabled: () => boolean
   private readonly checkUpdate: (() => Promise<UpdateInfo>) | null
@@ -142,6 +140,11 @@ export class LocalApi {
     this.parser = options.parser ?? parsePdf
     const secrets = options.secretStore ?? new MemorySecretStore()
     this.ai = new AiService(db, secrets, options.aiRunner)
+    this.records = new RecordStore(db, {
+      serialize: (label, work) => this.serializeMutation(label, work),
+      recognize: (files, hint) => this.ai.recognize(files, hint),
+      readPdf: options.recordPdfReader,
+    })
     this.garmin = new GarminService(db, secrets, options.garminClientFactory, options.garminOptions)
     this.garminLaneStallMs = options.garminLaneStallMs ?? GARMIN_LANE_STALL_MS
     this.garminEnabled = options.garminEnabled ?? (() => true)
@@ -152,12 +155,19 @@ export class LocalApi {
   dispose(): void {
     this.disposed = true
     this.garmin.dispose()
+    this.records.dispose()
   }
   async settled(): Promise<void> {
     while (this.pendingJobs.length || this.runningJobs.size) {
       await Promise.allSettled([...this.runningJobs])
     }
+    await this.records.settled()
     await Promise.all([this.mutationQueue.catch(() => undefined), this.garminQueue.catch(() => undefined)])
+  }
+
+  /** Re-reads medical record PDFs left unparsed or parsed by older rules. */
+  resumeRecords(): Promise<number> {
+    return this.records.resume()
   }
 
   /** Queue state for /health, so a stalled lane is visible instead of guessed at. */
@@ -246,6 +256,7 @@ export class LocalApi {
       catch (error) { throw new HttpError(422, describeModelError(error)) }
     }
     if (path === '/ai/settings' && method === 'GET') return json(res, 200, this.ai.settings())
+    if (path === '/ai/capabilities' && method === 'GET') return json(res, 200, await this.ai.capabilities())
     if (path === '/ai/settings' && method === 'PUT') {
       try { return json(res, 200, await this.ai.saveSettings(await readJson(req))) }
       catch (error) { throw new HttpError(422, error instanceof Error ? error.message : '模型配置无效') }
@@ -350,7 +361,8 @@ export class LocalApi {
       res.writeHead(204); res.end(); return
     }
     if (path === '/profiles' && method === 'GET') return json(res, 200, this.db.rows(`SELECT p.id,p.name,p.relation,p.birth_date,p.is_default,p.created_at,
-      (SELECT count(*) FROM reports r WHERE r.profile_id=p.id) AS report_count FROM profiles p WHERE p.owner_id=:owner ORDER BY p.is_default DESC,p.created_at`, { owner: OWNER_ID }).map((item) => ({ ...item, is_default: Boolean(item.is_default) })))
+      (SELECT count(*) FROM reports r WHERE r.profile_id=p.id) AS report_count,
+      (SELECT count(*) FROM medical_records m WHERE m.profile_id=p.id) AS record_count FROM profiles p WHERE p.owner_id=:owner ORDER BY p.is_default DESC,p.created_at`, { owner: OWNER_ID }).map((item) => ({ ...item, is_default: Boolean(item.is_default) })))
     if (path === '/profiles' && method === 'POST') {
       const payload = await readJson(req)
       const name = typeof payload.name === 'string' ? payload.name.trim() : ''
@@ -360,10 +372,31 @@ export class LocalApi {
       if (birth !== null && (typeof birth !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(birth) || !Number.isFinite(Date.parse(birth)) || new Date(birth).toISOString().slice(0, 10) !== birth)) throw new HttpError(422, '出生日期无效')
       const record = { id: randomUUID(), owner_id: OWNER_ID, name, relation, birth_date: birth, is_default: false, created_at: now(), updated_at: now() }
       this.insert('profiles', record); await this.db.persist()
-      return json(res, 201, { ...record, report_count: 0 })
+      return json(res, 201, { ...record, report_count: 0, record_count: 0 })
     }
     if (path === '/reports' && method === 'GET') return json(res, 200, this.aggregation.reports(this.profile(query.get('profile_id'))).map(reportSummary))
     if (path === '/reports' && method === 'POST') return this.upload(req, res)
+    if (path === '/records' && method === 'GET') return json(res, 200, this.records.list(this.profile(query.get('profile_id'))))
+    if (path === '/records' && method === 'POST') {
+      const payload = await readJson(req, 16 * 1024)
+      return json(res, 201, await this.records.create(this.profile(typeof payload.profile_id === 'string' ? payload.profile_id : null), payload))
+    }
+    const recordRoute = /^\/records\/([^/]+)(\/files(?:\/([^/]+)(?:\/(recognize|reparse))?)?)?$/.exec(path)
+    if (recordRoute) {
+      const recordId = recordRoute[1]!; const files = Boolean(recordRoute[2]); const fileId = recordRoute[3]; const action = recordRoute[4]
+      if (action && method === 'POST') return json(res, 202, await this.records.requestParse(recordId, fileId!, action === 'recognize' ? 'ai' : 'local'))
+      if (action) throw new HttpError(405, '请求方法无效')
+      if (!files && method === 'GET') return json(res, 200, this.records.detail(recordId))
+      if (!files && method === 'PUT') return json(res, 200, await this.records.update(recordId, await readJson(req, 16 * 1024)))
+      if (!files && method === 'DELETE') { await this.records.remove(recordId); res.writeHead(204); res.end(); return }
+      if (files && !fileId && method === 'POST') return this.uploadRecordFile(req, res, recordId)
+      if (fileId && method === 'GET') {
+        const file = await this.records.content(recordId, fileId, query.get('thumb') === '1')
+        res.writeHead(200, { 'content-type': file.mime, 'cache-control': 'no-store', 'content-length': file.body.length, 'x-content-type-options': 'nosniff',
+          'content-disposition': `inline; filename*=UTF-8''${encodeURIComponent(file.filename)}` }); res.end(file.body); return
+      }
+      if (fileId && method === 'DELETE') { await this.records.removeFileFrom(recordId, fileId); res.writeHead(204); res.end(); return }
+    }
     if (path === '/dashboard' && method === 'GET') return json(res, 200, this.aggregation.dashboard(this.profile(query.get('profile_id'))))
     if (path === '/dashboard/risk-detail' && method === 'GET') {
       const year = Number(query.get('year')); if (!query.has('year') || !Number.isInteger(year)) throw new HttpError(422, '请选择有效年份')
@@ -434,8 +467,10 @@ export class LocalApi {
     if (path === '/data' && method === 'DELETE') {
       const reports = this.db.rows<DbReport>('SELECT * FROM reports')
       this.removeReports(reports); this.db.run('DELETE FROM ai_insights'); this.db.run('DELETE FROM garmin_daily'); this.db.run('DELETE FROM garmin_activities')
+      const recordFiles = this.records.clearAll()
       this.db.run('UPDATE garmin_settings SET last_sync_at=NULL,last_sync_error=NULL,updated_at=:now', { now: now() }); await this.db.persist()
       for (const report of reports) await removeFile(this.filePath(report))
+      await this.records.unlink(recordFiles)
       res.writeHead(204); res.end(); return
     }
     throw new HttpError(404, '接口不存在')
@@ -502,6 +537,21 @@ export class LocalApi {
       await this.db.persist()
     } catch (error) { await removeFile(report.stored_path).catch(() => undefined); throw error }
     json(res, 201, { report: reportSummary(report), job }); this.scheduleJob(String(job.id))
+  }
+
+  private async uploadRecordFile(req: IncomingMessage, res: ServerResponse, recordId: string): Promise<void> {
+    this.records.get(recordId)
+    const contentType = req.headers['content-type'] ?? ''
+    if (!contentType.startsWith('multipart/form-data;')) throw new HttpError(415, '上传格式无效')
+    const bytes = await readBody(req, MAX_RECORD_FILE_BYTES + 8 * 1024 * 1024)
+    let form: FormData
+    try { form = await new Response(new Uint8Array(bytes), { headers: { 'content-type': contentType } }).formData() }
+    catch { throw new HttpError(400, '上传表单无效') }
+    const file = form.get('file')
+    if (!file || typeof file === 'string') throw new HttpError(400, '请选择文件')
+    const bytesOf = async (name: string) => { const part = form.get(name); return part && typeof part !== 'string' ? new Uint8Array(await part.arrayBuffer()) : null }
+    return json(res, 201, await this.records.addFile(recordId, { name: file.name, content: new Uint8Array(await file.arrayBuffer()),
+      thumbnail: await bytesOf('thumbnail'), readable: await bytesOf('readable') }, { recognize: form.get('recognize') === '1' }))
   }
 
   private scheduleJob(id: string): void {
@@ -578,15 +628,17 @@ export class LocalApi {
 
   private async export(res: ServerResponse): Promise<void> {
     const reports = this.db.rows<DbReport>('SELECT * FROM reports ORDER BY year')
-    const payload = { format: 'healthpocket-export', version: 2, created_at: now(), parser_version: PARSER_VERSION, rules_version: RULES_VERSION,
+    const records = await this.records.exportArchive()
+    const payload = { format: 'healthpocket-export', version: 3, created_at: now(), parser_version: PARSER_VERSION, rules_version: RULES_VERSION,
       metric_definitions: METRICS, profiles: this.db.rows('SELECT id,name,relation,birth_date,is_default FROM profiles').map((row) => ({ ...row, is_default: Boolean(row.is_default) })),
       reports: reports.map((report) => ({ ...reportSummary(report), measurements: this.db.rows<DbMeasurement>('SELECT * FROM measurements WHERE report_id=:id', { id: report.id }).map(decodeBbox), findings: this.db.rows('SELECT * FROM findings WHERE report_id=:id', { id: report.id }) })),
+      records: records.records,
       garmin: {
         settings: this.db.rows('SELECT email,region,profile_id,display_name,last_sync_at,updated_at FROM garmin_settings'),
         daily: this.db.rows('SELECT * FROM garmin_daily ORDER BY profile_id,date'),
         activities: this.db.rows('SELECT * FROM garmin_activities ORDER BY profile_id,date'),
       } }
-    const files: Record<string, Uint8Array> = { 'manifest.json': strToU8(JSON.stringify(payload, null, 2)) }
+    const files: Record<string, Uint8Array> = { 'manifest.json': strToU8(JSON.stringify(payload, null, 2)), ...records.files }
     for (const report of reports) {
       try { files[`reports/${report.sha256}.pdf`] = await readFile(this.filePath(report)) }
       catch { throw new HttpError(409, `原始报告文件缺失，无法生成完整备份：${report.filename}`) }

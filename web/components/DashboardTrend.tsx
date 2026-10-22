@@ -5,7 +5,7 @@ import type { TrendSeries } from "@/lib/types";
 
 export function DashboardTrend({ series }: { series: TrendSeries | null }) {
   const data = series?.points.map((point) => ({
-    year: point.year,
+    year: point.exam_date ?? String(point.year),
     value: point.value_numeric,
     low: point.ref_low,
     high: point.ref_high,

@@ -6,6 +6,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { StatusBadge } from "@/components/StatusBadge";
 import { apiFetch, withProfile } from "@/lib/api";
+import { evidenceHref, evidenceLink } from "@/lib/records";
 import {
   ATLAS_SYSTEM_ORDER,
   ATLAS_SYSTEMS,
@@ -300,7 +301,7 @@ export default function BodyPage() {
               <div className="evidence-row" key={`${item.title}-${index}`}>
                 <div><strong>{item.title}</strong>{item.anatomy_label && <span className="evidence-anatomy">{item.anatomy_label}</span>}{item.kind === "finding" && <div className="muted" style={{ marginTop: 4, lineHeight: 1.45 }}>{item.value}</div>}</div>
                 <div className="evidence-status"><div className="mono">{item.value || "—"}</div><StatusBadge status={item.status} compact /><small>{item.status_reason}</small></div>
-                <div><div className="muted mono" style={{ marginBottom: 4 }}>{item.reference || "报告结论"}</div><Link className="link" href={`/reports/detail?id=${item.report_id}`}>第 {item.page} 页</Link></div>
+                <div><div className="muted mono" style={{ marginBottom: 4 }}>{item.reference || "报告结论"}</div><Link className="link" href={evidenceHref(item)}>{evidenceLink(item)}</Link></div>
               </div>
             ))}
           </section>
