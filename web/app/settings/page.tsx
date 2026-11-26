@@ -1,12 +1,16 @@
 "use client";
 
-import { ArrowClockwise, CaretDown, CaretUp, CheckCircle, ClipboardText, DownloadSimple, FloppyDisk, PlugsConnected, ShieldCheck, SignOut, Trash, WarningOctagon, Watch, X } from "@phosphor-icons/react";
+import { ArrowClockwise, Brain, CaretDown, CaretUp, CheckCircle, ClipboardText, Database, Desktop, DownloadSimple, FloppyDisk, Moon, Palette, PlugsConnected, ShieldCheck, SignOut, Sun, Trash, WarningOctagon, Watch, X } from "@phosphor-icons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, apiFetch, apiUrl, isAbortError } from "@/lib/api";
 import { BASE_PATH } from "@/lib/base-path";
 import type { AiCapabilities, AiModelList, AiProvider, AiProviderInfo, AiSettings, GarminActive, GarminDashboard, GarminDiagnostics, GarminMfaPrompt, GarminSettings } from "@/lib/types";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { useProfiles } from "@/components/ProfileProvider";
+import { useTheme, type ThemePreference } from "@/components/ThemeProvider";
 import { UpdateSettingsRow } from "@/components/UpdateSettingsRow";
+
+type SettingsTab = "appearance" | "ai" | "garmin" | "data";
 
 const DEFAULT_SETTINGS: AiSettings = { provider: "deepseek", name: "DeepSeek", base_url: "https://api.deepseek.com", model: "", has_api_key: false, enabled: false, updated_at: null };
 const DEFAULT_GARMIN: GarminSettings = { email: "", region: "global", profile_id: null, authenticated: false, display_name: null, last_sync_at: null, last_sync_error: null, syncing: false, updated_at: null, mfa: null, running: null };
@@ -119,6 +123,10 @@ function AiVisionNote({ updatedAt }: { updatedAt: string | null }) {
 
 export default function SettingsPage() {
   const { activeProfileId } = useProfiles();
+  const { preference, setPreference, resolvedTheme, hasHostTheme } = useTheme();
+  const [activeTab, setActiveTab] = useState<SettingsTab>("appearance");
+  const [wipeConfirmOpen, setWipeConfirmOpen] = useState(false);
+  const [wiping, setWiping] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [ai, setAi] = useState<AiSettings>(DEFAULT_SETTINGS);
@@ -572,11 +580,18 @@ export default function SettingsPage() {
     finally { setSaving(false); }
   };
 
-  const wipe = async () => {
-    if (!window.confirm("永久删除本机中的全部报告、指标和解析结果？请先导出备份。")) return;
-    if (!window.confirm("最后确认：此操作无法撤销。")) return;
-    try { await apiFetch("/data", { method: "DELETE" }); setMessage("全部健康数据已删除"); setError(""); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : "删除失败"); }
+  const executeWipe = async () => {
+    setWiping(true);
+    try {
+      await apiFetch("/data", { method: "DELETE" });
+      setWipeConfirmOpen(false);
+      setMessage("全部健康数据已删除");
+      setError("");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "删除失败");
+    } finally {
+      setWiping(false);
+    }
   };
 
   const providerChanged = (id: AiProvider) => {
@@ -597,11 +612,91 @@ export default function SettingsPage() {
   if (mfa?.target) mfaOptions.push({ value: "email", label: `邮箱 ${mfa.target}` });
   if (mfa?.masked_phone) mfaOptions.push({ value: "sms", label: `短信 ${mfa.masked_phone}` });
 
+  const themeOptions: Array<{ id: ThemePreference; label: string; desc: string; icon: React.ReactNode }> = [
+    { id: "auto", label: hasHostTheme ? "跟随 Obsidian" : "跟随系统", desc: hasHostTheme ? "自动同步当前 Obsidian 的深浅主题外观" : "自动匹配操作系统浅色或深色外观", icon: <Desktop size={20} /> },
+    { id: "dark", label: "深邃暗色", desc: "Obsidian 曜石暗色面板，高对比突出数据与 3D 图谱", icon: <Moon size={20} /> },
+    { id: "light", label: "清透浅色", desc: "干净明亮的浅色工作区，适合强光环境阅读", icon: <Sun size={20} /> },
+  ];
+
   return (
     <>
-      <header className="page-header"><div><h1 className="page-title">设置</h1><p className="page-subtitle">管理 AI 模型、本地数据、备份和解析版本。</p></div></header>
-      {message && <div className="notice">{message}</div>}{error && <div className="error">{error}</div>}
-      {garmin.feature_enabled === false ? (
+      <header className="page-header">
+        <div>
+          <h1 className="page-title">设置</h1>
+          <p className="page-subtitle">管理外观主题、AI 模型、Garmin 同步、本地数据备份与更新。</p>
+        </div>
+      </header>
+
+      <nav className="settings-tabs" role="tablist" aria-label="设置分区">
+        <button type="button" role="tab" aria-selected={activeTab === "appearance"} className={activeTab === "appearance" ? "active" : ""} onClick={() => setActiveTab("appearance")}>
+          <Palette size={17} /> 外观与通用
+        </button>
+        <button type="button" role="tab" aria-selected={activeTab === "ai"} className={activeTab === "ai" ? "active" : ""} onClick={() => setActiveTab("ai")}>
+          <Brain size={17} /> AI 模型
+          {ai.enabled && <i className="tab-dot ok" aria-hidden="true" />}
+        </button>
+        <button type="button" role="tab" aria-selected={activeTab === "garmin"} className={activeTab === "garmin" ? "active" : ""} onClick={() => setActiveTab("garmin")}>
+          <Watch size={17} /> Garmin 同步
+          {garmin.authenticated && <i className="tab-dot ok" aria-hidden="true" />}
+        </button>
+        <button type="button" role="tab" aria-selected={activeTab === "data"} className={activeTab === "data" ? "active" : ""} onClick={() => setActiveTab("data")}>
+          <Database size={17} /> 数据与隐私
+        </button>
+      </nav>
+
+      {message && <div className="notice" style={{ marginBottom: 16 }}>{message}</div>}
+      {error && <div className="error" style={{ marginBottom: 16 }}>{error}</div>}
+
+      {activeTab === "appearance" && (
+        <div className="settings-stack">
+          <section className="panel settings-card">
+            <div className="ai-settings-head">
+              <div>
+                <span className="eyebrow"><Palette size={14} /> 界面外观</span>
+                <h2>主题模式</h2>
+                <p>当前生效：{resolvedTheme === "dark" ? "深邃暗色" : "清透浅色"}。切换后立即同步全站页面、图表与 3D 人体图谱。</p>
+              </div>
+            </div>
+            <div className="theme-option-grid" role="radiogroup" aria-label="选择主题模式">
+              {themeOptions.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  role="radio"
+                  aria-checked={preference === item.id}
+                  className={`theme-option-card ${preference === item.id ? "active" : ""}`}
+                  onClick={() => setPreference(item.id)}
+                >
+                  <div className={`theme-preview theme-preview-${item.id}`} aria-hidden="true">
+                    <span className="tp-side" />
+                    <span className="tp-body"><i /><i /></span>
+                  </div>
+                  <div className="theme-option-meta">
+                    <span className="theme-option-title">{item.icon} <strong>{item.label}</strong></span>
+                    <small>{item.desc}</small>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </section>
+
+          <section className="settings-list">
+            <UpdateSettingsRow />
+          </section>
+
+          <section className="panel settings-card license-copy">
+            <h2 className="section-title">开源与医学边界</h2>
+            <p>健康口袋不提供诊断或个性化医疗建议。AI 输出用于整理报告，必须结合原始证据和专业医生意见理解。</p>
+            <p>器官导航采用 Human Atlas 的 BodyParts3D 4.0 浏览器模型，模型数据采用 CC BY 4.0；原始参考体为成年男性。</p>
+            <div className="license-links">
+              <a className="link" href={`${BASE_PATH}/licenses/HUMAN_ATLAS_ATTRIBUTION.md`} target="_blank" rel="noreferrer">查看完整模型署名与许可</a>
+              <a className="link" href={`${BASE_PATH}/licenses/THIRD_PARTY_NOTICES.txt`} target="_blank" rel="noreferrer">查看内嵌软件许可</a>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {activeTab === "garmin" && (garmin.feature_enabled === false ? (
       <section className="ai-settings panel garmin-settings">
         <div className="ai-settings-head"><div><span className="eyebrow"><Watch /> Garmin Connect · 实验性</span><h2>Garmin 同步未开启</h2><p>该功能模拟 Garmin Connect 手机 App 的非公开接口，不是 Garmin 官方产品，可能违反 Garmin 服务条款，接口也可能随时失效。如需使用，请在 Obsidian 设置 → 第三方插件 → HealthPocket 中开启，然后重新打开本页面。</p></div></div>
       </section>
@@ -771,7 +866,8 @@ export default function SettingsPage() {
           </div>
         )}
       </section>
-      )}
+      ))}
+      {activeTab === "ai" && (
       <section className="ai-settings panel">
         <div className="ai-settings-head"><div><span className="eyebrow">AI 模型</span><h2>三步完成连接</h2><p>供应商和模型列表来自开源的 Models.dev 目录，调用由开源的 Vercel AI SDK 完成。选择供应商，填写密钥，再选择或直接输入模型名称。</p></div>{ai.enabled && <span className="status status-normal"><CheckCircle /> 已配置</span>}</div>
         <div className="ai-setup-steps">
@@ -791,13 +887,37 @@ export default function SettingsPage() {
         <div className="ai-form-note">获取列表和测试连接不会发送健康数据。开始对话后，才会发送当前档案的去身份化结构化数据和你主动附加的数据文件。用 AI 识别病历、化验单的图片或扫描件时，会发送该文件的原图。</div>
         <div className="ai-form-actions">{ai.has_api_key && <button className="button button-danger" onClick={() => void clearKey()} disabled={saving}>移除密钥</button>}<button className="button" onClick={() => void testAi()} disabled={testing || saving || !canSave}><PlugsConnected /> {testing ? "正在测试…" : "保存并测试"}</button><button className="button button-primary" onClick={() => void saveAi()} disabled={saving || !canSave}><FloppyDisk /> {saving ? "保存中…" : "保存配置"}</button></div>
       </section>
+      )}
+      {activeTab === "data" && (
       <section className="settings-list">
-        <div className="settings-row"><div><h2>完整数据导出</h2><p>包含原始 PDF、结构化 JSON、Garmin 健康与运动记录、指标字典和规则版本。</p></div><p>AI 密钥、Garmin 密码和 OAuth 令牌不会进入备份文件。</p><button className="button" onClick={() => void exportData()}><DownloadSimple /> 导出备份</button></div>
-        <div className="settings-row"><div><h2>永久删除数据</h2><p>删除当前运行库中的 PDF、派生数据、Garmin 记录和 AI 洞察。</p></div><p>操作完成后无法恢复。账号连接设置、旧版迁移前的数据库与报告副本、已导出的备份仍保留在原位置。</p><button className="button button-danger" onClick={() => void wipe()}><Trash /> 删除全部</button></div>
-        <UpdateSettingsRow />
+        <div className="settings-row">
+          <div>
+            <h2>完整数据导出</h2>
+            <p>包含原始 PDF、结构化 JSON、Garmin 健康与运动记录、指标字典和规则版本。</p>
+          </div>
+          <p>AI 密钥、Garmin 密码和 OAuth 令牌不会进入备份文件。</p>
+          <button className="button" onClick={() => void exportData()}><DownloadSimple /> 导出备份</button>
+        </div>
+        <div className="settings-row settings-row-danger">
+          <div>
+            <h2>永久删除数据</h2>
+            <p>删除当前运行库中的 PDF、派生数据、Garmin 记录和 AI 洞察。</p>
+          </div>
+          <p>操作完成后无法恢复。建议先点击上方导出完整备份。</p>
+          <button className="button button-danger" onClick={() => setWipeConfirmOpen(true)}><Trash /> 删除全部</button>
+        </div>
       </section>
-      <section className="section license-copy"><h2 className="section-title">开源与医学边界</h2><p>健康口袋不提供诊断或个性化医疗建议。AI 输出用于整理报告，必须结合原始证据和专业医生意见理解。</p><p>器官导航采用 Human Atlas 的 BodyParts3D 4.0 浏览器模型，模型数据采用 CC BY 4.0；原始参考体为成年男性。</p><p><a className="link" href={`${BASE_PATH}/licenses/HUMAN_ATLAS_ATTRIBUTION.md`} target="_blank">查看完整模型署名与许可</a></p></section>
-      <p className="muted"><a className="link" href={`${BASE_PATH}/licenses/THIRD_PARTY_NOTICES.txt`} target="_blank" rel="noreferrer">查看内嵌软件许可</a></p>
+      )}
+      <ConfirmDialog
+        open={wipeConfirmOpen}
+        title="永久删除本机全部健康数据？"
+        description="将不可逆地清除所有体检 PDF、解析指标、就医记录、Garmin 日常数据与 AI 洞察。账号连接设置和已导出的备份文件不受影响。"
+        confirmLabel="确认永久删除"
+        danger
+        busy={wiping}
+        onConfirm={() => void executeWipe()}
+        onCancel={() => setWipeConfirmOpen(false)}
+      />
       <dialog
         ref={mfaDialog}
         className={mfaDialogFloating ? "dialog-floating" : undefined}

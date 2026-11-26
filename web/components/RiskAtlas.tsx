@@ -1,12 +1,6 @@
 "use client";
 
-import {
-  ChartLineUp,
-  CursorClick,
-  Stack,
-  WarningCircle,
-  X,
-} from "@phosphor-icons/react/dist/ssr";
+import { CursorClick, X } from "@phosphor-icons/react/dist/ssr";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { StatusBadge } from "@/components/StatusBadge";
@@ -47,16 +41,6 @@ export function RiskAtlas({
   profileId: string | null;
 }) {
   const latestYear = years.at(-1)?.year;
-  const latestCells = rows
-    .map((row) => row.years.find((cell) => cell.year === latestYear))
-    .filter(Boolean);
-  const currentRiskCount = latestCells.reduce(
-    (sum, cell) => sum + (cell?.abnormal_count || 0),
-    0,
-  );
-  const currentSystems = latestCells.filter(
-    (cell) => cell?.status === "abnormal" || cell?.status === "attention",
-  ).length;
   const peakYear = years.reduce((peak, item) => {
     const score = item.abnormal_count * 3 + item.attention_count;
     const peakScore = peak.abnormal_count * 3 + peak.attention_count;
@@ -88,10 +72,9 @@ export function RiskAtlas({
         if (request === requestVersion.current) setDetail(data);
       })
       .catch((reason) => {
-        if (request === requestVersion.current)
-          setError(
-            reason instanceof Error ? reason.message : "无法加载风险明细",
-          );
+        if (request === requestVersion.current) {
+          setError(reason instanceof Error ? reason.message : "无法加载风险明细");
+        }
       })
       .finally(() => {
         if (request === requestVersion.current) setLoading(false);
@@ -104,9 +87,9 @@ export function RiskAtlas({
     <div className="risk-atlas">
       <div className="risk-atlas-heading">
         <div>
-          <h2 className="section-title">年度健康轨迹 · 风险图谱</h2>
+          <h2 className="section-title">年度风险图谱</h2>
           <p>
-            按系统汇总历年体检与就医记录中的可信异常证据；数字为去重后的风险数量，点击可查看明细。
+            按系统汇总历年体检与就医记录中的可信异常证据{peakYear?.year ? ` · 风险最集中年份 ${peakYear.year}` : ""}，点击任意数字查看原始证据。
           </p>
         </div>
         <div className="risk-atlas-legend" aria-label="风险图谱图例">
@@ -120,29 +103,7 @@ export function RiskAtlas({
           )}
         </div>
       </div>
-      <div className="risk-atlas-summary">
-        <div>
-          <WarningCircle aria-hidden="true" />
-          <span>
-            当前异常<strong className="mono">{currentRiskCount}</strong>
-            <small>项风险</small>
-          </span>
-        </div>
-        <div>
-          <Stack aria-hidden="true" />
-          <span>
-            涉及系统<strong className="mono">{currentSystems}</strong>
-            <small>个系统</small>
-          </span>
-        </div>
-        <div>
-          <ChartLineUp aria-hidden="true" />
-          <span>
-            风险峰值<strong className="mono">{peakYear?.year || "—"}</strong>
-            <small>异常最集中</small>
-          </span>
-        </div>
-      </div>
+
       <div className="risk-atlas-main">
         <div className="risk-atlas-scroll">
           <table className="risk-atlas-table">
@@ -154,7 +115,7 @@ export function RiskAtlas({
                     key={item.year}
                     className={item.year === latestYear ? "latest" : ""}
                   >
-                    <span>{item.year}</span>
+                    <span className="mono">{item.year}</span>
                     {item.year === latestYear && <small>最新</small>}
                   </th>
                 ))}
@@ -222,6 +183,7 @@ export function RiskAtlas({
             </tbody>
           </table>
         </div>
+
         <aside className="risk-detail" aria-live="polite">
           {selected ? (
             loading ? (
@@ -300,18 +262,18 @@ export function RiskAtlas({
             ) : null
           ) : (
             <div className="risk-detail-empty">
-              <CursorClick aria-hidden="true" />
+              <CursorClick size={28} weight="duotone" aria-hidden="true" />
               <p>
-                点击表格中有风险的年份数字，
+                点击左侧有风险的年份色块，
                 <br />
-                查看对应的异常指标与报告结论。
+                查看对应的异常指标与原文结论。
               </p>
             </div>
           )}
         </aside>
       </div>
       <p className="risk-atlas-note">
-        数量来自体检报告和已识别的病历、化验单中的异常指标与诊断，仅用于健康管理，不构成医学诊断。
+        数量来自体检报告和已识别病历、化验单中的异常指标与诊断，仅用于健康管理，不构成医学诊断。
       </p>
     </div>
   );

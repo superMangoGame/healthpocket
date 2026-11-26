@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { CategoryChip } from "@/components/RecordCategory";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { RecordForm } from "@/components/RecordForm";
 import { StatusBadge } from "@/components/StatusBadge";
 import { apiFetch } from "@/lib/api";
@@ -117,6 +118,8 @@ function RecordDetailView() {
   const [error, setError] = useState("");
   const [editing, setEditing] = useState(false);
   const [editBusy, setEditBusy] = useState(false);
+  const [confirmTarget, setConfirmTarget] = useState<{ kind: "record" } | { kind: "file"; file: RecordFile } | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const editDialog = useRef<HTMLDialogElement>(null);
 
   const load = useCallback(async () => {
@@ -184,22 +187,36 @@ function RecordDetailView() {
     catch (reason) { setError(reason instanceof Error ? reason.message : "无法开始识别"); }
   };
 
-  const removeFile = async (file: RecordFile) => {
-    if (!record || !window.confirm(`删除附件「${file.filename}」？原文件会从本机数据目录移除，无法撤销。`)) return;
-    try {
-      await apiFetch(`/records/${record.id}/files/${file.id}`, { method: "DELETE" });
-      setIndex((value) => Math.max(0, Math.min(value, files.length - 2)));
-      await load();
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "删除失败"); }
+  const removeFile = (file: RecordFile) => {
+    if (!record) return;
+    setConfirmTarget({ kind: "file", file });
   };
 
-  const removeRecord = async () => {
-    if (!record || !window.confirm(`删除「${recordTitle(record)}」及其 ${record.files.length} 个附件？此操作无法撤销。`)) return;
+  const removeRecord = () => {
+    if (!record) return;
+    setConfirmTarget({ kind: "record" });
+  };
+
+  const executeConfirmDelete = async () => {
+    if (!record || !confirmTarget) return;
+    setDeleting(true);
     try {
-      await apiFetch(`/records/${record.id}`, { method: "DELETE" });
-      if (activeProfileId) await refreshProfiles(activeProfileId);
-      router.push("/reports");
-    } catch (reason) { setError(reason instanceof Error ? reason.message : "删除失败"); }
+      if (confirmTarget.kind === "file") {
+        await apiFetch(`/records/${record.id}/files/${confirmTarget.file.id}`, { method: "DELETE" });
+        setIndex((value) => Math.max(0, Math.min(value, files.length - 2)));
+        setConfirmTarget(null);
+        await load();
+      } else {
+        await apiFetch(`/records/${record.id}`, { method: "DELETE" });
+        setConfirmTarget(null);
+        if (activeProfileId) await refreshProfiles(activeProfileId);
+        router.push("/reports");
+      }
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "删除失败");
+    } finally {
+      setDeleting(false);
+    }
   };
 
   const openEditor = () => { setEditing(true); editDialog.current?.showModal(); };
@@ -316,6 +333,20 @@ function RecordDetailView() {
           )}
         </div>
       </dialog>
+      <ConfirmDialog
+        open={Boolean(confirmTarget)}
+        title={confirmTarget?.kind === "file" ? `删除附件「${confirmTarget.file.filename}」？` : `删除「${recordTitle(record)}」？`}
+        description={
+          confirmTarget?.kind === "file"
+            ? "原文件会从本机数据目录移除，此操作无法撤销。"
+            : `将永久删除该条记录及其全部 ${record.files.length} 个附件，此操作无法撤销。`
+        }
+        confirmLabel="确认删除"
+        danger
+        busy={deleting}
+        onConfirm={() => void executeConfirmDelete()}
+        onCancel={() => setConfirmTarget(null)}
+      />
     </>
   );
 }

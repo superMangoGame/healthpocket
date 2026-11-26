@@ -20,7 +20,7 @@ import type { HealthStatus } from "@/lib/types";
 import { BASE_PATH } from "@/lib/base-path";
 
 const MODEL_ROOT = `${BASE_PATH}/models/human-atlas`;
-const SELECTED_COLOR = "#3d7a68";
+const SELECTED_COLOR = "#34d399";
 
 interface AnatomySceneProps {
   selected: string;
@@ -242,19 +242,29 @@ function Viewer({
     rimLight.position.set(2.5, 2, -3);
     scene.add(rimLight);
 
-    const platformMaterial = new THREE.MeshStandardMaterial({ color: 0xe9eeec, metalness: 0.05, roughness: 0.8 });
+    const isDarkTheme = () => document.documentElement.dataset.theme !== "light";
+    const platformMaterial = new THREE.MeshStandardMaterial({ color: isDarkTheme() ? 0x161d29 : 0xe2e8f0, metalness: 0.12, roughness: 0.72 });
     const platformGeometry = new THREE.CylinderGeometry(0.47, 0.5, 0.022, 80);
     const platform = new THREE.Mesh(platformGeometry, platformMaterial);
     platform.position.y = -0.014;
     scene.add(platform);
-    const ringGeometry = new THREE.RingGeometry(0.43, 0.433, 100);
-    const ringMaterial = new THREE.MeshBasicMaterial({ color: 0x7ea8a1, transparent: true, opacity: 0.42, side: THREE.DoubleSide });
+    const ringGeometry = new THREE.RingGeometry(0.43, 0.434, 100);
+    const ringMaterial = new THREE.MeshBasicMaterial({ color: isDarkTheme() ? 0x34d399 : 0x059669, transparent: true, opacity: isDarkTheme() ? 0.52 : 0.42, side: THREE.DoubleSide });
     const ring = new THREE.Mesh(ringGeometry, ringMaterial);
     ring.rotation.x = -Math.PI / 2;
     ring.position.y = 0;
     scene.add(ring);
     geometries.push(platformGeometry, ringGeometry);
     materials.push(platformMaterial, ringMaterial);
+
+    const syncSceneTheme = () => {
+      const dark = isDarkTheme();
+      platformMaterial.color.setHex(dark ? 0x161d29 : 0xe2e8f0);
+      ringMaterial.color.setHex(dark ? 0x34d399 : 0x059669);
+      ringMaterial.opacity = dark ? 0.52 : 0.42;
+    };
+    const themeObserver = new MutationObserver(syncSceneTheme);
+    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
 
     const stateWidth = THREE.MathUtils.ceilPowerOfTwo(atlas.parts.length);
     const highlightData = new Uint8Array(stateWidth * 4);
@@ -802,6 +812,7 @@ function Viewer({
       cancelAnimationFrame(animationFrame);
       if (hoverFrame) cancelAnimationFrame(hoverFrame);
       resizeObserver.disconnect();
+      themeObserver.disconnect();
       controls.dispose();
       geometries.forEach((geometry) => geometry.dispose());
       materials.forEach((material) => material.dispose());

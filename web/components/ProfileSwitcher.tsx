@@ -14,7 +14,7 @@ const relationLabels: Record<ProfileRelation, string> = {
   other: "其他家人",
 };
 
-export function ProfileSwitcher({ compact = false }: { compact?: boolean }) {
+export function ProfileSwitcher({ compact = false, collapsed = false }: { compact?: boolean; collapsed?: boolean }) {
   const { profiles, activeProfile, loading, error: profileError, selectProfile, refreshProfiles } = useProfiles();
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
@@ -57,20 +57,25 @@ export function ProfileSwitcher({ compact = false }: { compact?: boolean }) {
 
   return (
     <>
-      <div ref={wrap} className={`profile-switcher ${compact ? "compact" : ""}`}>
+      <div ref={wrap} className={`profile-switcher ${compact ? "compact" : ""} ${collapsed ? "is-collapsed" : ""}`}>
         <button
           className="profile-switcher-button"
           aria-haspopup="menu"
           aria-expanded={open}
+          title={collapsed && activeProfile ? `${activeProfile.name}（${relationLabels[activeProfile.relation]}）` : undefined}
           disabled={loading || !activeProfile}
           onClick={() => setOpen((value) => !value)}
         >
           <span className="profile-avatar" aria-hidden="true">{activeProfile?.name.slice(0, 1) || "·"}</span>
-          <span className="profile-switcher-copy">
-            <strong>{activeProfile?.name || (loading ? "加载中" : "健康档案")}</strong>
-            <small>{activeProfile ? `${relationLabels[activeProfile.relation]} · ${activeProfile.report_count + (activeProfile.record_count ?? 0)} 份报告` : profileError}</small>
-          </span>
-          <CaretDown size={14} />
+          {!collapsed && (
+            <>
+              <span className="profile-switcher-copy">
+                <strong>{activeProfile?.name || (loading ? "加载中" : "健康档案")}</strong>
+                <small>{activeProfile ? `${relationLabels[activeProfile.relation]} · ${activeProfile.report_count + (activeProfile.record_count ?? 0)} 份记录` : profileError}</small>
+              </span>
+              <CaretDown size={14} className="profile-caret" />
+            </>
+          )}
         </button>
         {open && (
           <div className="profile-menu" role="menu" aria-label="切换健康档案">

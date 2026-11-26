@@ -73,12 +73,12 @@ const statusDescriptions: Record<HealthStatus, string> = {
 };
 
 const fallbackColors: Record<HealthStatus, string> = {
-  normal: "#4a7d5d", attention: "#a8742a", abnormal: "#b04a3b", insufficient: "#b2aa9c",
+  normal: "var(--normal)", attention: "var(--attention)", abnormal: "var(--abnormal)", insufficient: "var(--insufficient)",
 };
 
 function AnatomyBackdrop({ selected, statuses, anatomySex }: { selected: string; statuses: Record<string, HealthStatus>; anatomySex: AnatomySex }) {
   const fill = (id: string) => fallbackColors[statuses[id] || "insufficient"];
-  const stroke = (id: string) => selected === id ? "#22201c" : "#fffefb";
+  const stroke = (id: string) => selected === id ? "var(--accent)" : "var(--surface)";
   return <div className="anatomy-backdrop" aria-hidden="true">
     <svg viewBox="0 0 360 620" role="presentation">
       <path className="body-outline" d="M180 30c-31 0-53 24-53 55 0 24 13 43 31 51l-7 29-58 34c-15 9-21 25-16 40l23 70 13-5-8-73 49-19-9 116-22 180 28 3 29-150 29 150 28-3-22-180-9-116 49 19-8 73 13 5 23-70c5-15-1-31-16-40l-58-34-7-29c18-8 31-27 31-51 0-31-22-55-53-55Z" />
@@ -115,7 +115,8 @@ export default function BodyPage() {
   const [selected, setSelected] = useState("liver");
   const [visibleSystems, setVisibleSystems] = useState<AtlasSystemId[]>(() => [...DEFAULT_ATLAS_SYSTEMS]);
   const [explodeProgress, setExplodeProgress] = useState(0);
-  const [layerPanelOpen, setLayerPanelOpen] = useState(true);
+  const [layerPanelOpen, setLayerPanelOpen] = useState(false);
+  const [onlyRiskyOrgans, setOnlyRiskyOrgans] = useState(false);
   const [timelines, setTimelines] = useState<Record<string, OrganTimeline>>({});
   const [year, setYear] = useState<number | null>(null);
   const [webgl, setWebgl] = useState(true);
@@ -268,9 +269,21 @@ export default function BodyPage() {
           </div>
         </div>
         <nav className="panel organ-nav" aria-label="器官导航">
-          <strong className="organ-nav-title">器官导航</strong>
+          <div className="organ-nav-head">
+            <strong className="organ-nav-title">器官导航</strong>
+            <button
+              type="button"
+              className={`organ-filter-toggle ${onlyRiskyOrgans ? "active" : ""}`}
+              aria-pressed={onlyRiskyOrgans}
+              onClick={() => setOnlyRiskyOrgans((v) => !v)}
+            >
+              仅异常/关注
+            </button>
+          </div>
           <div className="organ-nav-track">
-            {organOptions.map(([id, label]) => (
+            {organOptions
+              .filter(([id]) => !onlyRiskyOrgans || statuses[id] === "abnormal" || statuses[id] === "attention" || selected === id)
+              .map(([id, label]) => (
               <button key={id} className={`${selected === id ? "active " : ""}tone-${statuses[id] || "insufficient"}`} aria-pressed={selected === id} onClick={() => setSelected(id)}>
                 <span className="organ-nav-glyph" aria-hidden="true">{organGlyphs[id]}</span>
                 <span>{label}</span>

@@ -37,6 +37,8 @@ interface HealthPocketSettings {
 const DEFAULT_SETTINGS: HealthPocketSettings = { garminEnabled: false, port: null }
 
 class HealthPocketView extends ItemView {
+  private iframe: HTMLIFrameElement | null = null
+
   constructor(leaf: WorkspaceLeaf, private readonly plugin: HealthPocketPlugin) {
     super(leaf)
   }
@@ -54,11 +56,22 @@ class HealthPocketView extends ItemView {
   }
 
   async onOpen(): Promise<void> {
+    this.registerEvent(this.app.workspace.on('css-change', () => {
+      this.syncTheme()
+    }))
     await this.render()
+  }
+
+  private syncTheme(): void {
+    const win = this.iframe?.contentWindow
+    if (!win) return
+    const targetOrigin = this.plugin.appOrigin() ?? '*'
+    win.postMessage({ type: 'healthpocket:host-theme', theme: this.plugin.currentHostTheme() }, targetOrigin)
   }
 
   /** Rebuilds the iframe, e.g. after a setting that changes the app's navigation. */
   async render(): Promise<void> {
+    this.iframe = null
     this.contentEl.empty()
     this.contentEl.addClass('healthpocket-obsidian-view')
 
@@ -77,9 +90,12 @@ class HealthPocketView extends ItemView {
       },
     })
     iframe.addClass('healthpocket-obsidian-frame')
+    iframe.addEventListener('load', () => this.syncTheme())
+    this.iframe = iframe
   }
 
   async onClose(): Promise<void> {
+    this.iframe = null
     this.contentEl.empty()
   }
 }
@@ -228,10 +244,19 @@ export default class HealthPocketPlugin extends Plugin {
     this.packageRoot = null
   }
 
+  currentHostTheme(): 'dark' | 'light' {
+    if (typeof document === 'undefined' || !document.body) return 'dark'
+    return document.body.classList.contains('theme-dark') ? 'dark' : 'light'
+  }
+
+  appOrigin(): string | null {
+    return this.origin
+  }
+
   /** Starts the local server on first use and returns the app's address. */
   async appUrl(): Promise<string> {
     await this.startServer()
-    return `${this.origin}${APP_PREFIX}/#healthpocket-token=${this.accessToken}`
+    return `${this.origin}${APP_PREFIX}/#healthpocket-token=${this.accessToken}&healthpocket-theme=${this.currentHostTheme()}`
   }
 
   async activateView(): Promise<void> {
